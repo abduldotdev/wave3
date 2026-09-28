@@ -1,6 +1,6 @@
 #!/bin/bash
-# Exercises bin/wave3-reset and bin/wave3-watch against a stub pactl on PATH.
-# Never touches the real audio server.
+# Exercises bin/wave3-reset, bin/wave3-meter and bin/wave3-watch against stub
+# pactl and parec binaries on PATH. Never touches the real audio server.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
@@ -9,6 +9,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 CARD="alsa_card.usb-Elgato_Systems_Elgato_Wave_3_TEST123-00"
 SRC="alsa_input.usb-Elgato_Systems_Elgato_Wave_3_TEST123-00.mono-fallback"
+SINK="alsa_output.usb-Elgato_Systems_Elgato_Wave_3_TEST123-00.analog-stereo"
 OTHER="alsa_input.usb-046d_MX_Brio_TEST-04.analog-stereo"
 
 mkdir -p "$TMP/bin"
@@ -22,6 +23,9 @@ case "$1 ${2:-}" in
     if [ "$3" = cards ]; then
       echo "50	alsa_card.pci-0000_0d_00.4	alsa"
       [ -f "$STUB/card" ] && echo "48	$(cat "$STUB/card")	alsa"
+    elif [ "$3" = sinks ]; then
+      echo "33	alsa_output.pci-0000_0d_00.4.analog-stereo	PipeWire	s16le 2ch 48000Hz	SUSPENDED"
+      [ -f "$STUB/sink" ] && echo "53	$(cat "$STUB/sink")	PipeWire	s24le 2ch 48000Hz	RUNNING"
     else
       echo "34	$OTHER	PipeWire	s16le 2ch 48000Hz	SUSPENDED"
       [ -f "$STUB/source" ] && echo "$(cat "$STUB/srcidx")	$(cat "$STUB/source")	PipeWire	s24le 1ch 48000Hz	SUSPENDED"
@@ -31,6 +35,14 @@ case "$1 ${2:-}" in
     [ -f "$STUB/card" ] && printf 'Card #48\n\tName: %s\n\tActive Profile: %s\n' "$(cat "$STUB/card")" "$(cat "$STUB/profile")" ;;
   "get-default-source "*) cat "$STUB/default" ;;
   "get-source-mute "*) echo "Mute: $(cat "$STUB/muted")" ;;
+  "get-source-volume "*)
+    v="$(cat "$STUB/volume")"
+    echo "Volume: mono: $((v * 655)) / ${v}% / 0.00 dB" ;;
+  "get-sink-volume "*)
+    l="$(cat "$STUB/sink_volume")"
+    if [ -f "$STUB/sink_volume_r" ]; then r="$(cat "$STUB/sink_volume_r")"; else r="$l"; fi
+    echo "Volume: front-left: $((l * 655)) / ${l}% / -20.81 dB,   front-right: $((r * 655)) / ${r}% / -20.81 dB" ;;
+  "get-sink-mute "*) echo "Mute: $(cat "$STUB/sink_muted")" ;;
   "set-default-source "*) [ -f "$STUB/vanish" ] && { echo "Failure: No such entity" >&2; exit 1; }; echo "$2" > "$STUB/default" ;;
   "set-source-mute "*) [ "$3" = 0 ] && echo no > "$STUB/muted" || echo yes > "$STUB/muted" ;;
   # A profile switch recreates the source under a new index unless keep-index.
@@ -42,6 +54,22 @@ esac
 exit 0
 STUB
 chmod +x "$TMP/bin/pactl"
+# Three 800-sample chunks: silence, +32767, and -32768 (clamped to 32767).
+# $STUB/parec-forever loops a chunk instead, so a signal test can catch it.
+cat > "$TMP/bin/parec" <<'STUB'
+#!/bin/bash
+echo "parec $*" >> "$STUB/parec.log"
+if [ -f "$STUB/parec-forever" ]; then
+  while true; do
+    dd if=/dev/zero bs=1600 count=1 status=none
+    sleep 0.05
+  done
+fi
+dd if=/dev/zero bs=1600 count=1 status=none
+printf '\377\177%.0s' $(seq 1 800)
+printf '\000\200%.0s' $(seq 1 800)
+STUB
+chmod +x "$TMP/bin/parec"
 export PATH="$TMP/bin:$PATH" OTHER STUB="$TMP/state" WAVE3_WAIT_TRIES=2
 
 fails=0
@@ -56,7 +84,15 @@ fresh() {
   echo "${3:-yes}" > "$STUB/muted"
   echo "output:analog-stereo+input:mono-fallback" > "$STUB/profile"
   echo 61 > "$STUB/srcidx"
-  if [ "$1" = yes ]; then echo "$CARD" > "$STUB/card"; echo "$SRC" > "$STUB/source"; fi
+  echo 100 > "$STUB/volume"
+  echo 45 > "$STUB/sink_volume"
+  echo no > "$STUB/sink_muted"
+  # The headphone sink is present exactly when the card is.
+  if [ "$1" = yes ]; then
+    echo "$CARD" > "$STUB/card"
+    echo "$SRC" > "$STUB/source"
+    echo "$SINK" > "$STUB/sink"
+  fi
 }
 calls() { grep -v -e ' list ' -e ' get-' "$STUB/log" || true; }
 
@@ -70,12 +106,41 @@ set +e; "$ROOT/bin/wave3-reset" --default-only 2>/dev/null; rc=$?; set -e
 check "absent: --default-only exits non-zero" '[ "$rc" -ne 0 ]'
 out="$("$ROOT/bin/wave3-reset" --status)"
 check "absent: --status reports absent and exits 0" '[[ "$out" == *"present=no"* && "$out" == *"state=absent"* ]]'
+expected="$(cat <<EOF
+present=no
+default=no
+muted=no
+state=absent
+profile=
+volume=
+sink=
+sink_volume=
+sink_muted=no
+EOF
+)"
+check "absent: --status is the empty shape" '[ "$out" = "$expected" ]'
 
 # --- present, not default, muted ---
 fresh yes
 out="$("$ROOT/bin/wave3-reset" --status)"
 check "present: --status fields" '[[ "$out" == *"present=yes"* && "$out" == *"default=no"* && "$out" == *"muted=yes"* && "$out" == *"state=SUSPENDED"* && "$out" == *"source=$SRC"* && "$out" == *"profile=output:analog-stereo+input:mono-fallback"* ]]'
 check "present: --status changes nothing" '[ -z "$(calls)" ]'
+# fresh leaves the mic not-default and muted; every other line is the fixture.
+expected="$(cat <<EOF
+present=yes
+default=no
+muted=yes
+state=SUSPENDED
+profile=output:analog-stereo+input:mono-fallback
+source=$SRC
+volume=100
+sink=$SINK
+sink_volume=45
+sink_muted=no
+EOF
+)"
+check "present: --status matches the level fixture" '[ "$out" = "$expected" ]'
+check "present: --status makes no set-* calls" '! grep -q " set-" "$STUB/log"'
 
 "$ROOT/bin/wave3-reset" >/dev/null
 expected="pactl set-card-profile $CARD output:iec958-stereo+input:mono-fallback
@@ -119,8 +184,103 @@ check "vanish: missing source at set-default fails with a wave3-reset message" '
 fresh yes; touch "$STUB/down"
 set +e; out="$("$ROOT/bin/wave3-reset" --status 2>/dev/null)"; rc=$?; set -e
 check "server down: --status exits 0 with the absent shape" '[ "$rc" -eq 0 ] && [[ "$out" == *"present=no"* && "$out" == *"state=absent"* ]]'
+expected="$(cat <<EOF
+present=no
+default=no
+muted=no
+state=absent
+profile=
+volume=
+sink=
+sink_volume=
+sink_muted=no
+EOF
+)"
+check "server down: --status is the empty shape" '[ "$rc" -eq 0 ] && [ "$out" = "$expected" ]'
 set +e; err="$("$ROOT/bin/wave3-reset" 2>&1 >/dev/null)"; rc=$?; set -e
 check "server down: reset fails with a clear message" '[ "$rc" -ne 0 ] && [[ "$err" == *"cannot reach the audio server"* ]]'
+
+# --- levels: mic absent, headphone sink present ---
+fresh no
+echo "$CARD" > "$STUB/card"
+echo "$SINK" > "$STUB/sink"
+echo "output:analog-stereo" > "$STUB/profile"
+out="$("$ROOT/bin/wave3-reset" --status)"
+expected="$(cat <<EOF
+present=no
+default=no
+muted=no
+state=absent
+profile=output:analog-stereo
+volume=
+sink=$SINK
+sink_volume=45
+sink_muted=no
+EOF
+)"
+check "sink only: status shape" '[ "$out" = "$expected" ]'
+
+fresh yes
+echo 40 > "$STUB/sink_volume"
+echo 51 > "$STUB/sink_volume_r"
+out="$("$ROOT/bin/wave3-reset" --status)"
+check "unequal channels: sink_volume rounds 40/51 to 46" 'printf "%s\n" "$out" | grep -qx "sink_volume=46"'
+
+# --- meter ---
+fresh yes
+set +e; out="$("$ROOT/bin/wave3-meter" 2>"$TMP/meter.err")"; rc=$?; set -e
+check "meter: peaks are 0, 32767, 32767" '[ "$out" = "$(printf "0\n32767\n32767")" ]'
+check "meter: parec ending exits 1" '[ "$rc" -eq 1 ]'
+log="$(cat "$STUB/parec.log")"
+check "meter: parec targets the mic by name" '[[ "$log" == *"-d $SRC"* && "$log" == *"Wave:3 level meter"* && "$log" != *".monitor"* ]]'
+
+fresh no
+echo "$CARD" > "$STUB/card"
+check "meter: monitor source is still listed" 'pactl list short sources | grep -q "\.monitor"'
+set +e; err="$("$ROOT/bin/wave3-meter" 2>&1 >/dev/null)"; rc=$?; set -e
+check "meter: missing mic exits 1" '[ "$rc" -eq 1 ] && [[ "$err" == "wave3-meter: Elgato Wave:3 input source not found" ]]'
+check "meter: missing mic never starts parec" '[ ! -e "$STUB/parec.log" ]'
+
+fresh yes; touch "$STUB/down"
+set +e; err="$("$ROOT/bin/wave3-meter" 2>&1 >/dev/null)"; rc=$?; set -e
+check "meter: server down exits 1" '[ "$rc" -eq 1 ] && [[ "$err" == "wave3-meter: cannot reach the audio server (pactl failed)" ]]'
+check "meter: server down never starts parec" '[ ! -e "$STUB/parec.log" ]'
+
+set +e; err="$("$ROOT/bin/wave3-meter" --bogus 2>&1 >/dev/null)"; rc=$?; set -e
+check "meter: unknown option exits 2" '[ "$rc" -eq 2 ] && [[ "$err" == "wave3-meter: unknown option: --bogus" ]]'
+
+fresh yes; touch "$STUB/parec-forever"
+"$ROOT/bin/wave3-meter" >/dev/null 2>"$TMP/meter.err" &
+mpid=$!
+started=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  if pgrep -f "$TMP/bin/parec" >/dev/null; then started=1; break; fi
+  sleep 0.05
+done
+check "meter: forever mode starts parec" '[ "$started" -eq 1 ]'
+kill -TERM "$mpid"
+set +e
+exited=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if ! kill -0 "$mpid" 2>/dev/null; then exited=1; break; fi
+  sleep 0.1
+done
+if [ "$exited" -eq 1 ]; then
+  wait "$mpid"
+  rc=$?
+else
+  kill -KILL "$mpid" 2>/dev/null || true
+  wait "$mpid" 2>/dev/null || true
+  rc=99
+fi
+set -e
+check "meter: TERM exits 0" '[ "$rc" -eq 0 ]'
+gone=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if ! pgrep -f "$TMP/bin/parec" >/dev/null; then gone=1; break; fi
+  sleep 0.1
+done
+check "meter: TERM stops parec within 1s" '[ "$gone" -eq 1 ]'
 
 # --- watcher ---
 cat > "$TMP/fake-reset" <<'EOF'
