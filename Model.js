@@ -22,6 +22,7 @@ function parseStatus(text) {
   var status = {
     present: false,
     isDefault: false,
+    isDefaultVirtual: false,
     muted: false,
     state: "absent",
     profile: "",
@@ -40,6 +41,7 @@ function parseStatus(text) {
     var value = line.slice(eq + 1)
     if (key === "present") status.present = value === "yes"
     else if (key === "default") status.isDefault = value === "yes"
+    else if (key === "default_virtual") status.isDefaultVirtual = value === "yes"
     else if (key === "muted") status.muted = value === "yes"
     else if (key === "state") status.state = value || "absent"
     else if (key === "profile") status.profile = value
@@ -53,18 +55,98 @@ function parseStatus(text) {
   return status
 }
 
+// Parses bin/wave3-hw status key=value output into a hardware status object.
+function parseHwStatus(text) {
+  var status = {
+    present: false,
+    access: "",
+    device: "",
+    api: "",
+    supported: false,
+    gainDb: 0,
+    mute: false,
+    clipguard: false,
+    lowcut: false,
+    hpDb: 0,
+    hpMute: false,
+    directMonitor: 0,
+    volumeSelect: 1,
+    ledsOff: false,
+    ledsFlip: false,
+    gainLock: false,
+    raw: "",
+    hwReady: false
+  }
+  var lines = String(text || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim()
+    var eq = line.indexOf("=")
+    if (eq <= 0) continue
+    var key = line.slice(0, eq)
+    var value = line.slice(eq + 1)
+    if (key === "present") status.present = value === "yes"
+    else if (key === "access") status.access = value
+    else if (key === "device") status.device = value
+    else if (key === "api") status.api = value
+    else if (key === "supported") status.supported = value === "yes"
+    else if (key === "gain_db") {
+      var g = parseFloat(value)
+      status.gainDb = isNaN(g) ? 0 : g
+    }
+    else if (key === "mute") status.mute = value === "1" || value === "yes" || value === "true" || value === "on"
+    else if (key === "clipguard") status.clipguard = value === "1" || value === "yes" || value === "true" || value === "on"
+    else if (key === "lowcut") status.lowcut = value === "1" || value === "yes" || value === "true" || value === "on"
+    else if (key === "hp_db") {
+      var h = parseFloat(value)
+      status.hpDb = isNaN(h) ? 0 : h
+    }
+    else if (key === "hp_mute") status.hpMute = value === "1" || value === "yes" || value === "true" || value === "on"
+    else if (key === "direct_monitor") {
+      var dm = parseInt(value, 10)
+      status.directMonitor = isNaN(dm) ? 0 : dm
+    }
+    else if (key === "volume_select") {
+      var vs = parseInt(value, 10)
+      status.volumeSelect = isNaN(vs) ? 1 : vs
+    }
+    else if (key === "leds_off") status.ledsOff = value === "1" || value === "yes" || value === "true" || value === "on"
+    else if (key === "leds_flip") status.ledsFlip = value === "1" || value === "yes" || value === "true" || value === "on"
+    else if (key === "gain_lock") status.gainLock = value === "1" || value === "yes" || value === "true" || value === "on"
+    else if (key === "raw") status.raw = value
+  }
+  status.hwReady = Boolean(status.present && status.access === "ok" && status.supported)
+  if (!status.present) {
+    status.access = ""
+    status.device = ""
+    status.api = ""
+    status.supported = false
+    status.hwReady = false
+  }
+  return status
+}
+
+// Whether the mic is muted either via pactl or via hardware mute.
+function isMuted(status, hwStatus) {
+  if (status && status.muted) return true
+  if (hwStatus && hwStatus.hwReady && hwStatus.mute) return true
+  return false
+}
+
 // "absent" (dimmed), "warn" (not default or muted) or "ok".
-function statusLevel(status) {
+function statusLevel(status, hwStatus) {
   if (!status || !status.present) return "absent"
-  if (!status.isDefault || status.muted) return "warn"
+  var muted = isMuted(status, hwStatus)
+  var effectiveDefault = Boolean(status.isDefault || status.isDefaultVirtual)
+  if (!effectiveDefault || muted) return "warn"
   return "ok"
 }
 
-function statusSummary(status) {
+function statusSummary(status, hwStatus) {
   if (!status || !status.present) return "Wave:3 not connected"
   var parts = []
-  parts.push(status.isDefault ? "default input" : "not the default input")
-  if (status.muted) parts.push("muted")
+  if (status.isDefaultVirtual) parts.push("filter source default")
+  else parts.push(status.isDefault ? "default input" : "not the default input")
+  if (isMuted(status, hwStatus)) parts.push("muted")
   if (status.state) parts.push(status.state.toLowerCase())
   return "Wave:3: " + parts.join(", ") + " — click for controls, right-click to reset"
 }
@@ -74,7 +156,8 @@ function headerLine(status) {
   if (!status || !status.present) return "Not connected"
   var parts = []
   if (status.state) parts.push(status.state.toLowerCase())
-  parts.push(status.isDefault ? "default input" : "not the default input")
+  if (status.isDefaultVirtual) parts.push("filter source default (e.g. EasyEffects)")
+  else parts.push(status.isDefault ? "default input" : "not the default input")
   if (status.profile) parts.push(status.profile)
   return parts.join(" · ")
 }
@@ -175,11 +258,69 @@ function meterRunning(open, shown, present, available) {
   return open === true && shown === true && present === true && available === true
 }
 
+var HW_FIELD_MAP = {
+  gain_db: "gain_db",
+  mute: "mute",
+  clipguard: "clipguard",
+  lowcut: "lowcut",
+  hp_db: "hp_db",
+  hp_mute: "hp_mute",
+  direct_monitor: "direct_monitor",
+  volume_select: "volume_select",
+  leds_off: "leds_off",
+  leds_flip: "leds_flip",
+  gain_lock: "gain_lock",
+  gainDb: "gain_db",
+  hpDb: "hp_db",
+  hpMute: "hp_mute",
+  directMonitor: "direct_monitor",
+  volumeSelect: "volume_select",
+  ledsOff: "leds_off",
+  ledsFlip: "leds_flip",
+  gainLock: "gain_lock"
+}
+
+// Builds the argv array for bin/wave3-hw set <field> <value>.
+// Returns null for unknown fields or missing script.
+function hwSetCommand(script, field, value) {
+  if (!script || typeof script !== "string") return null
+  if (!field || typeof field !== "string") return null
+  var cliField = HW_FIELD_MAP[field]
+  if (!cliField) return null
+  return [script, "set", cliField, String(value)]
+}
+
+// Quantize gain to 0..40 dB in 0.5 steps.
+function quantizeGain(v) {
+  var n = Number(v)
+  if (isNaN(n)) return 0
+  var clamped = Math.max(0, Math.min(40, n))
+  return Math.round(clamped * 2) / 2
+}
+
+// Quantize headphone volume to -60..0 dB in 0.5 steps.
+function quantizeHp(v) {
+  var n = Number(v)
+  if (isNaN(n)) return -60
+  var clamped = Math.max(-60, Math.min(0, n))
+  return Math.round(clamped * 2) / 2
+}
+
+// Quantize direct monitor blend to 0..100 in 5 steps.
+function quantizeDirectMonitor(v) {
+  var n = Number(v)
+  if (isNaN(n)) return 0
+  var clamped = Math.max(0, Math.min(100, n))
+  return Math.round(clamped / 5) * 5
+}
+
 // Export for Node.js test environment (in QML, top-level functions and vars
 // are directly accessible via import namespace).
 if (typeof module !== "undefined") {
   module.exports = {
     parseStatus: parseStatus,
+    parseHwStatus: parseHwStatus,
+    isMuted: isMuted,
     statusLevel: statusLevel,
     statusSummary: statusSummary,
     SOURCE_PATTERN: SOURCE_PATTERN,
@@ -190,6 +331,12 @@ if (typeof module !== "undefined") {
     setSourceMuteCommand: setSourceMuteCommand,
     setSinkVolumeCommand: setSinkVolumeCommand,
     setSinkMuteCommand: setSinkMuteCommand,
+    hwSetCommand: hwSetCommand,
+    quantizeGain: quantizeGain,
+    quantizeGainDb: quantizeGain,
+    quantizeHp: quantizeHp,
+    quantizeHpDb: quantizeHp,
+    quantizeDirectMonitor: quantizeDirectMonitor,
     headphonesAvailable: headphonesAvailable,
     canSetDefault: canSetDefault,
     sliderValue: sliderValue,

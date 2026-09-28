@@ -16,6 +16,11 @@ PopupWindow {
   property bool open: false
 
   property var status: Model.parseStatus("")
+  property var hwStatus: Model.parseHwStatus("")
+  readonly property bool hwReady: Boolean(root.hwStatus && root.hwStatus.hwReady)
+  readonly property string udevRulePath: Qt.resolvedUrl("udev/70-elgato-wave3.rules").toString().replace(/^file:\/\//, "")
+  readonly property string udevInstallCommand: "sudo install -m644 " + root.udevRulePath + " /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger"
+
   // Bumped by the widget on every status read, changed or not.
   property int statusSerial: 0
   property real level: 0
@@ -33,6 +38,7 @@ PopupWindow {
   signal sourceMuteRequested(bool muted)
   signal sinkVolumeRequested(int percent)
   signal sinkMuteRequested(bool muted)
+  signal hwSetRequested(string field, var value)
   signal setDefaultRequested()
   signal resetRequested()
 
@@ -251,6 +257,255 @@ PopupWindow {
     }
   }
 
+  component GainControl: Column {
+    id: gc
+    property real gainDb: 0
+    property bool controlEnabled: true
+    signal committed(real val)
+
+    property real pendingVal: -999
+    property real liveVal: gainDb
+    onGainDbChanged: if (!slider.dragging) liveVal = gainDb
+
+    Connections {
+      target: root
+      function onStatusSerialChanged() {
+        gc.pendingVal = -999
+        if (!slider.dragging) gc.liveVal = gc.gainDb
+      }
+    }
+
+    width: parent.width
+    spacing: 3
+
+    Timer {
+      id: debounceTimer
+      interval: 150
+      repeat: false
+      onTriggered: {
+        root.isDragging = false
+        gc.pendingVal = gc.liveVal
+        gc.committed(gc.liveVal)
+      }
+    }
+
+    Row {
+      width: parent.width
+
+      Text {
+        text: "Gain"
+        color: gc.controlEnabled ? root.fg : root.safeMuted
+        font.family: root.fontFamily
+        font.pixelSize: 12
+        font.bold: true
+        anchors.verticalCenter: parent.verticalCenter
+        width: parent.width - gainControlsRow.implicitWidth
+      }
+
+      Row {
+        id: gainControlsRow
+        spacing: 6
+        anchors.verticalCenter: parent.verticalCenter
+
+        Text {
+          id: gainValText
+          text: (slider.dragging ? gc.liveVal : (gc.pendingVal >= 0 ? gc.pendingVal : gc.gainDb)).toFixed(1) + " dB"
+          color: gc.controlEnabled ? root.fg : root.safeMuted
+          font.family: root.fontFamily
+          font.pixelSize: 15
+          font.bold: true
+          anchors.verticalCenter: parent.verticalCenter
+        }
+
+        Button {
+          text: "−"
+          bordered: true
+          enabled: gc.controlEnabled && ((gc.pendingVal >= 0 ? gc.pendingVal : gc.gainDb) > 0)
+          foreground: root.fg
+          background: root.bg
+          accent: root.accent
+          fontFamily: root.fontFamily
+          fontSize: 11
+          horizontalPadding: 6
+          verticalPadding: 2
+          anchors.verticalCenter: parent.verticalCenter
+          onClicked: {
+            var cur = gc.pendingVal >= 0 ? gc.pendingVal : gc.gainDb
+            var next = Model.quantizeGain(cur - 0.5)
+            gc.liveVal = next
+            gc.pendingVal = next
+            gc.committed(next)
+          }
+        }
+
+        Button {
+          text: "+"
+          bordered: true
+          enabled: gc.controlEnabled && ((gc.pendingVal >= 0 ? gc.pendingVal : gc.gainDb) < 40)
+          foreground: root.fg
+          background: root.bg
+          accent: root.accent
+          fontFamily: root.fontFamily
+          fontSize: 11
+          horizontalPadding: 6
+          verticalPadding: 2
+          anchors.verticalCenter: parent.verticalCenter
+          onClicked: {
+            var cur = gc.pendingVal >= 0 ? gc.pendingVal : gc.gainDb
+            var next = Model.quantizeGain(cur + 0.5)
+            gc.liveVal = next
+            gc.pendingVal = next
+            gc.committed(next)
+          }
+        }
+      }
+    }
+
+    Item {
+      width: parent.width
+      height: slider.implicitHeight
+
+      PanelSlider {
+        id: slider
+        anchors.fill: parent
+        bar: root.bar
+        enabled: gc.controlEnabled
+        opacity: gc.controlEnabled ? 1.0 : 0.4
+        minimum: 0
+        maximum: 40
+        step: 0.5
+        integer: false
+        value: gc.pendingVal >= 0 ? gc.pendingVal : gc.gainDb
+
+        onMoved: function(v) {
+          gc.liveVal = Model.quantizeGain(v)
+          root.isDragging = true
+          debounceTimer.restart()
+        }
+        onReleased: function(v) {
+          debounceTimer.stop()
+          root.isDragging = false
+          gc.liveVal = Model.quantizeGain(v)
+          gc.pendingVal = gc.liveVal
+          gc.committed(gc.liveVal)
+        }
+      }
+    }
+  }
+
+  component HwSlider: Column {
+    id: hs
+    property string label: ""
+    property string sublabel: ""
+    property real value: 0
+    property real minimum: 0
+    property real maximum: 100
+    property real step: 1
+    property bool integer: false
+    property string unit: ""
+    property bool controlEnabled: true
+    signal committed(real val)
+
+    property real pendingVal: -9999
+    property real liveVal: value
+    onValueChanged: if (!slider.dragging) liveVal = value
+
+    Connections {
+      target: root
+      function onStatusSerialChanged() {
+        hs.pendingVal = -9999
+        if (!slider.dragging) hs.liveVal = hs.value
+      }
+    }
+
+    function formatVal(v) {
+      if (hs.integer) return Math.round(v) + (hs.unit ? " " + hs.unit : "")
+      return v.toFixed(1) + (hs.unit ? " " + hs.unit : "")
+    }
+
+    width: parent.width
+    spacing: 3
+
+    Timer {
+      id: debounceTimer
+      interval: 150
+      repeat: false
+      onTriggered: {
+        root.isDragging = false
+        hs.pendingVal = hs.liveVal
+        hs.committed(hs.liveVal)
+      }
+    }
+
+    Row {
+      width: parent.width
+
+      Column {
+        anchors.verticalCenter: parent.verticalCenter
+        width: parent.width - valText.implicitWidth
+
+        Text {
+          text: hs.label
+          color: hs.controlEnabled ? root.fg : root.safeMuted
+          font.family: root.fontFamily
+          font.pixelSize: 12
+          font.bold: true
+        }
+
+        Text {
+          visible: hs.sublabel !== ""
+          text: hs.sublabel
+          color: root.safeMuted
+          font.family: root.fontFamily
+          font.pixelSize: 10
+        }
+      }
+
+      Text {
+        id: valText
+        text: slider.dragging ? hs.formatVal(hs.liveVal)
+          : (hs.pendingVal !== -9999 ? hs.formatVal(hs.pendingVal) : hs.formatVal(hs.value))
+        color: root.safeMuted
+        font.family: root.fontFamily
+        font.pixelSize: 11
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    Item {
+      width: parent.width
+      height: slider.implicitHeight
+
+      PanelSlider {
+        id: slider
+        anchors.fill: parent
+        bar: root.bar
+        enabled: hs.controlEnabled
+        opacity: hs.controlEnabled ? 1.0 : 0.4
+        minimum: hs.minimum
+        maximum: hs.maximum
+        step: hs.step
+        integer: hs.integer
+        value: hs.pendingVal !== -9999 ? hs.pendingVal : hs.value
+
+        onMoved: function(v) {
+          if (hs.integer) hs.liveVal = Math.round(v)
+          else hs.liveVal = Math.round(v * 2) / 2
+          root.isDragging = true
+          debounceTimer.restart()
+        }
+        onReleased: function(v) {
+          debounceTimer.stop()
+          root.isDragging = false
+          if (hs.integer) hs.liveVal = Math.round(v)
+          else hs.liveVal = Math.round(v * 2) / 2
+          hs.pendingVal = hs.liveVal
+          hs.committed(hs.liveVal)
+        }
+      }
+    }
+  }
+
   BorderSurface {
     id: card
     anchors.fill: parent
@@ -278,7 +533,7 @@ PopupWindow {
         spacing: 8
 
         Text {
-          text: root.status.muted ? "󰍭" : "󰍬"
+          text: (root.status.muted || (root.hwReady && root.hwStatus.mute)) ? "󰍭" : "󰍬"
           color: root.status.present ? root.accent : root.safeMuted
           font.family: root.fontFamily
           font.pixelSize: 18
@@ -310,6 +565,47 @@ PopupWindow {
         foreground: root.fg
       }
 
+      // Hardware setup notice (shown when mic is connected but hardware controls need udev rules)
+      Column {
+        width: parent.width
+        spacing: 4
+        visible: root.status.present && !root.hwReady
+
+        Text {
+          text: "Hardware controls need setup:"
+          color: root.urgent
+          font.family: root.fontFamily
+          font.pixelSize: 11
+          font.bold: true
+        }
+
+        Rectangle {
+          width: parent.width
+          implicitHeight: setupCmdText.implicitHeight + 8
+          color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
+          radius: Style.cornerRadius
+          border.width: 1
+          border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.3)
+
+          TextEdit {
+            id: setupCmdText
+            anchors.fill: parent
+            anchors.margins: 4
+            text: root.udevInstallCommand
+            readOnly: true
+            selectByMouse: true
+            wrapMode: TextEdit.Wrap
+            color: root.fg
+            font.family: root.fontFamily
+            font.pixelSize: 9
+          }
+        }
+
+        PanelSeparator {
+          foreground: root.fg
+        }
+      }
+
       // Microphone
       Column {
         width: parent.width
@@ -322,17 +618,21 @@ PopupWindow {
           fontFamily: root.fontFamily
         }
 
-        WaveSlider {
-          label: "Gain"
-          percent: root.status.volume
-          controlEnabled: root.status.volume >= 0
-          onCommitted: function(v) { root.sourceVolumeRequested(v) }
+        // Hardware Gain control (0..40 dB) when hwReady; hidden when !hwReady
+        GainControl {
+          visible: root.hwReady
+          gainDb: root.hwStatus.gainDb
+          onCommitted: function(v) { root.hwSetRequested("gain_db", v) }
         }
 
+        // Mute mic via hw mute when hwReady, fallback to pactl mute when !hwReady
         WaveToggle {
           label: "Mute"
-          checked: root.status.muted
-          onToggled: root.sourceMuteRequested(!root.status.muted)
+          checked: root.hwReady ? root.hwStatus.mute : root.status.muted
+          onToggled: {
+            if (root.hwReady) root.hwSetRequested("mute", !root.hwStatus.mute)
+            else root.sourceMuteRequested(!root.status.muted)
+          }
         }
 
         // Level meter: peak bar, peak-hold marker and dBFS readout.
@@ -355,7 +655,7 @@ PopupWindow {
             Text {
               id: levelLabel
               text: !root.meterAvailable ? "Level unavailable"
-                : (root.status.muted ? "Muted" : root.levelText)
+                : ((root.status.muted || (root.hwReady && root.hwStatus.mute)) ? "Muted" : root.levelText)
               color: root.safeMuted
               font.family: root.fontFamily
               font.pixelSize: 11
@@ -373,12 +673,12 @@ PopupWindow {
             Rectangle {
               height: parent.height
               radius: parent.radius
-              width: parent.width * Model.meterPosition(root.status.muted ? 0 : root.level)
+              width: parent.width * Model.meterPosition((root.status.muted || (root.hwReady && root.hwStatus.mute)) ? 0 : root.level)
               color: root.level >= 0.99 ? root.urgent : root.accent
             }
 
             Rectangle {
-              visible: !root.status.muted && root.holdLevel > 0
+              visible: !(root.status.muted || (root.hwReady && root.hwStatus.mute)) && root.holdLevel > 0
               width: 2
               height: parent.height
               x: Math.max(0, parent.width * Model.meterPosition(root.holdLevel) - width)
@@ -405,11 +705,57 @@ PopupWindow {
         }
       }
 
-      // Headphones
+      // Monitoring (Hardware mode)
       Column {
         width: parent.width
         spacing: 10
-        visible: Model.headphonesAvailable(root.status)
+        visible: root.status.present && root.hwReady
+
+        PanelSectionHeader {
+          text: "MONITORING"
+          foreground: root.fg
+          fontFamily: root.fontFamily
+        }
+
+        HwSlider {
+          label: "Headphones"
+          value: root.hwStatus.hpDb
+          minimum: -60
+          maximum: 0
+          step: 0.5
+          integer: false
+          unit: "dB"
+          onCommitted: function(v) { root.hwSetRequested("hp_db", Model.quantizeHp(v)) }
+        }
+
+        WaveToggle {
+          label: "Mute headphones"
+          checked: root.hwStatus.hpMute
+          onToggled: root.hwSetRequested("hp_mute", !root.hwStatus.hpMute)
+        }
+
+        HwSlider {
+          label: "Monitor blend"
+          sublabel: "Mic ↔ Computer"
+          value: root.hwStatus.directMonitor
+          minimum: 0
+          maximum: 100
+          step: 5
+          integer: true
+          unit: "%"
+          onCommitted: function(v) { root.hwSetRequested("direct_monitor", Model.quantizeDirectMonitor(v)) }
+        }
+
+        PanelSeparator {
+          foreground: root.fg
+        }
+      }
+
+      // Headphones (Fallback mode when not hwReady)
+      Column {
+        width: parent.width
+        spacing: 10
+        visible: root.status.present && !root.hwReady && Model.headphonesAvailable(root.status)
 
         PanelSectionHeader {
           text: "HEADPHONES"
@@ -428,6 +774,148 @@ PopupWindow {
           label: "Mute"
           checked: root.status.sinkMuted
           onToggled: root.sinkMuteRequested(!root.status.sinkMuted)
+        }
+
+        PanelSeparator {
+          foreground: root.fg
+        }
+      }
+
+      // Onboard processing (Hardware mode)
+      Column {
+        width: parent.width
+        spacing: 10
+        visible: root.status.present && root.hwReady
+
+        PanelSectionHeader {
+          text: "ONBOARD PROCESSING"
+          foreground: root.fg
+          fontFamily: root.fontFamily
+        }
+
+        WaveToggle {
+          label: "Clipguard"
+          checked: root.hwStatus.clipguard
+          onToggled: root.hwSetRequested("clipguard", !root.hwStatus.clipguard)
+        }
+
+        WaveToggle {
+          label: "Low cut"
+          checked: root.hwStatus.lowcut
+          onToggled: root.hwSetRequested("lowcut", !root.hwStatus.lowcut)
+        }
+
+        PanelSeparator {
+          foreground: root.fg
+        }
+      }
+
+      // Device (Hardware mode)
+      Column {
+        width: parent.width
+        spacing: 10
+        visible: root.status.present && root.hwReady
+
+        PanelSectionHeader {
+          text: "DEVICE"
+          foreground: root.fg
+          fontFamily: root.fontFamily
+        }
+
+        Column {
+          width: parent.width
+          spacing: 2
+
+          WaveToggle {
+            label: "Gain lock"
+            checked: root.hwStatus.gainLock
+            onToggled: root.hwSetRequested("gain_lock", !root.hwStatus.gainLock)
+          }
+
+          Text {
+            text: "Locks gain from OS and apps; dial and this panel still work."
+            color: root.safeMuted
+            font.family: root.fontFamily
+            font.pixelSize: 10
+            wrapMode: Text.Wrap
+            width: parent.width
+          }
+        }
+
+        WaveToggle {
+          label: "LEDs off"
+          checked: root.hwStatus.ledsOff
+          onToggled: root.hwSetRequested("leds_off", !root.hwStatus.ledsOff)
+        }
+
+        WaveToggle {
+          label: "Flip LEDs"
+          checked: root.hwStatus.ledsFlip
+          onToggled: root.hwSetRequested("leds_flip", !root.hwStatus.ledsFlip)
+        }
+
+        Row {
+          width: parent.width
+          height: Math.max(dialModeText.implicitHeight, dialBtnRow.implicitHeight)
+
+          Text {
+            id: dialModeText
+            text: "Dial mode"
+            color: root.fg
+            font.family: root.fontFamily
+            font.pixelSize: 12
+            font.bold: true
+            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width - dialBtnRow.implicitWidth
+          }
+
+          Row {
+            id: dialBtnRow
+            spacing: 4
+            anchors.verticalCenter: parent.verticalCenter
+
+            Button {
+              text: "MIC"
+              bordered: true
+              selected: root.hwStatus.volumeSelect === 1
+              foreground: root.fg
+              background: root.bg
+              accent: root.accent
+              fontFamily: root.fontFamily
+              fontSize: 10
+              horizontalPadding: 6
+              verticalPadding: 2
+              onClicked: root.hwSetRequested("volume_select", 1)
+            }
+
+            Button {
+              text: "HEADPHONE"
+              bordered: true
+              selected: root.hwStatus.volumeSelect === 2
+              foreground: root.fg
+              background: root.bg
+              accent: root.accent
+              fontFamily: root.fontFamily
+              fontSize: 10
+              horizontalPadding: 6
+              verticalPadding: 2
+              onClicked: root.hwSetRequested("volume_select", 2)
+            }
+
+            Button {
+              text: "MIX"
+              bordered: true
+              selected: root.hwStatus.volumeSelect === 3
+              foreground: root.fg
+              background: root.bg
+              accent: root.accent
+              fontFamily: root.fontFamily
+              fontSize: 10
+              horizontalPadding: 6
+              verticalPadding: 2
+              onClicked: root.hwSetRequested("volume_select", 3)
+            }
+          }
         }
 
         PanelSeparator {
@@ -464,15 +952,6 @@ PopupWindow {
         color: root.urgent
         font.family: root.fontFamily
         font.pixelSize: 11
-        wrapMode: Text.Wrap
-        width: parent.width
-      }
-
-      Text {
-        text: "Clipguard, low-cut, mic/PC mix and LED need Elgato Wave Link — not available on Linux."
-        color: root.safeMuted
-        font.family: root.fontFamily
-        font.pixelSize: 10
         wrapMode: Text.Wrap
         width: parent.width
       }
