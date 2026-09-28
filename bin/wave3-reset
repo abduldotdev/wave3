@@ -9,7 +9,7 @@
 #                               filter default (EasyEffects) alone
 #   wave3-reset --status        print key=value lines for the bar widget
 #
-# The card and source are found by name pattern, never by serial or id.
+# The card and source are found by name pattern, never by a device identity string or numeric id.
 set -euo pipefail
 # pactl output is parsed below; keep it untranslated.
 export LC_ALL=C
@@ -97,7 +97,7 @@ current_default() {
 # yes when <name> is listed in `pactl list short sources` and is a virtual or
 # filter source: not alsa_input.*, not bluez_input.*, not a .monitor.
 # easyeffects_source matches. The Wave:3, a physical input, a monitor, and an
-# unlisted name (the absent BOYALINK) are no.
+# unlisted name (an absent other mic) are no.
 default_virtual_value() { # default_virtual_value <name>
   local def="$1"
   [ -n "$def" ] || { echo no; return; }

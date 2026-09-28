@@ -22,7 +22,7 @@ export WAVE3_HW="$TMP/wave3-hw-noop"
 CARD="alsa_card.usb-Elgato_Systems_Elgato_Wave_3_TEST123-00"
 SRC="alsa_input.usb-Elgato_Systems_Elgato_Wave_3_TEST123-00.mono-fallback"
 SINK="alsa_output.usb-Elgato_Systems_Elgato_Wave_3_TEST123-00.analog-stereo"
-OTHER="alsa_input.usb-046d_MX_Brio_TEST-04.analog-stereo"
+OTHER="alsa_input.usb-Generic_Webcam_Mic-04.analog-stereo"
 
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/pactl" <<'STUB'
@@ -271,10 +271,10 @@ set +e; "$TMP/bin/wave3-watch" 2>/dev/null; set -e
 check "watch: symlinked copy resolves sibling reset and defaults the mic" 'calls | grep -q "set-default-source $SRC"'
 
 # --- virtual default (EasyEffects) ---
-# fresh leaves the MX Brio (alsa_input) as default: physical, so not virtual.
+# fresh leaves the webcam mic (alsa_input) as default: physical, so not virtual.
 fresh yes
 out="$("$ROOT/bin/wave3-reset" --status)"
-check "status: physical MX Brio default is default_virtual=no" 'printf "%s\n" "$out" | grep -qx "default_virtual=no"'
+check "status: physical webcam default is default_virtual=no" 'printf "%s\n" "$out" | grep -qx "default_virtual=no"'
 
 fresh yes
 echo easyeffects_source > "$STUB/default"
@@ -292,9 +292,9 @@ out="$("$ROOT/bin/wave3-reset" --status)"
 check "status: a .monitor default is default_virtual=no" 'printf "%s\n" "$out" | grep -qx "default_virtual=no"'
 
 fresh yes
-echo "alsa_input.usb-BOYA_BOYALINK-00.mono-fallback" > "$STUB/default"
+echo "alsa_input.usb-Generic_Wireless_Mic-00.mono-fallback" > "$STUB/default"
 out="$("$ROOT/bin/wave3-reset" --status)"
-check "status: unlisted BOYALINK default is default_virtual=no" 'printf "%s\n" "$out" | grep -qx "default_virtual=no"'
+check "status: unlisted wireless mic default is default_virtual=no" 'printf "%s\n" "$out" | grep -qx "default_virtual=no"'
 
 fresh yes
 echo "bluez_input.AA_BB" > "$STUB/default"
@@ -327,8 +327,8 @@ ensure_forces() { # ensure_forces <label> <default-name>
   "$ROOT/bin/wave3-reset" --ensure-default >/dev/null
   check "$1" '[ "$(cat "$STUB/default")" = "$SRC" ]'
 }
-ensure_forces "ensure-default: re-asserts over an unlisted BOYALINK" "alsa_input.usb-BOYA_BOYALINK-00.mono-fallback"
-ensure_forces "ensure-default: re-asserts over the physical MX Brio" "$OTHER"
+ensure_forces "ensure-default: re-asserts over an unlisted wireless mic" "alsa_input.usb-Generic_Wireless_Mic-00.mono-fallback"
+ensure_forces "ensure-default: re-asserts over the physical webcam mic" "$OTHER"
 ensure_forces "ensure-default: re-asserts over a .monitor" "${SRC}.monitor"
 
 fresh yes
@@ -355,8 +355,8 @@ watch_default() { # watch_default <label> <default-name> <expected>
   check "$label" '[ "$(cat "$STUB/default")" = "'"$want"'" ]'
 }
 watch_default "watch: leaves easyeffects_source as the default" easyeffects_source easyeffects_source
-watch_default "watch: re-asserts over an unlisted BOYALINK" "alsa_input.usb-BOYA_BOYALINK-00.mono-fallback" "$SRC"
-watch_default "watch: re-asserts over the physical MX Brio" "$OTHER" "$SRC"
+watch_default "watch: re-asserts over an unlisted wireless mic" "alsa_input.usb-Generic_Wireless_Mic-00.mono-fallback" "$SRC"
+watch_default "watch: re-asserts over the physical webcam mic" "$OTHER" "$SRC"
 watch_default "watch: re-asserts over a .monitor" "${SRC}.monitor" "$SRC"
 # Event fixture, the symlink run, and the four watch_default runs: one apply each.
 check "watch: pre-existing cases use the no-op apply stub" '[ "$(cat "$TMP/hw-noop.log")" = "$(printf "apply --settle 2.5 --retries 2\n%.0s" 1 2 3 4 5 6)" ]'
