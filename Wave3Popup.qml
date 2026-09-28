@@ -26,6 +26,8 @@ PopupWindow {
   property string errorText: ""
   property bool resetting: false
   property bool isDragging: false
+  // Set when the window was hidden under us, so the fade-out does not re-map it.
+  property bool dismissed: false
 
   signal sourceVolumeRequested(int percent)
   signal sourceMuteRequested(bool muted)
@@ -55,12 +57,13 @@ PopupWindow {
   implicitWidth: 380
   implicitHeight: mainCol.implicitHeight + card.contentTopInset + card.contentBottomInset
 
-  visible: open || card.opacity > 0
+  visible: open || (card.opacity > 0 && !dismissed)
   color: "transparent"
 
   function close() { root.open = false }
 
   onOpenChanged: {
+    if (open) dismissed = false
     if (!bar) return
     if (open) bar.requestPopout(coordinatorKey)
     else if (bar.activePopout === coordinatorKey) bar.releasePopout(coordinatorKey)
@@ -68,7 +71,7 @@ PopupWindow {
 
   // The compositor can dismiss the popup, or unmap the bar under it, without
   // touching open. Close for real so the widget stops the meter.
-  onVisibleChanged: if (!visible && open) close()
+  onVisibleChanged: if (!visible && open) { dismissed = true; close() }
 
   HyprlandFocusGrab {
     active: root.open
