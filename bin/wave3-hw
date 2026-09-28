@@ -10,9 +10,13 @@ import ctypes
 import errno
 import fcntl
 import glob
+import json
+import math
 import os
 import struct
 import sys
+import tempfile
+import time
 
 VENDOR_ID = "0fd9"
 PRODUCT_ID = "0070"
@@ -28,6 +32,16 @@ SEL_STATUS = 0x0001
 SEL_VERSION = 0x000A
 
 CONFIG_LEN = 16
+SUPPORTED_APIS = ((5, 3), (5, 4))
+
+LOCK_TIMEOUT = 2.0
+LOCK_POLL = 0.02
+BUSY_ERRNOS = (errno.EBUSY, errno.EAGAIN)
+BUSY_DELAYS = (0.01, 0.02, 0.04, 0.08, 0.16, 0.32)
+
+STORE_VERSION = 1
+
+USAGE = "usage: wave3-hw status | set <field> <value> | apply [--settle SECONDS] [--retries N] | save | forget"
 
 
 class Ctrl(ctypes.Structure):
@@ -134,6 +148,11 @@ STATUS_FIELDS = [
     "gain_lock",
 ]
 
+# Fields remembered in the store and restored by apply. mute and volume_select
+# are never persisted: a muted mic after replug is surprising, and the dial
+# reverts to mic mode on its own.
+STORED_FIELDS = [f for f in STATUS_FIELDS if f not in ("mute", "volume_select")]
+
 
 class DeviceAbsent(Exception):
     pass
@@ -151,6 +170,27 @@ class UnsupportedApiVersion(Exception):
 
 class ReadBackMismatch(Exception):
     pass
+
+
+class DeviceBusy(Exception):
+    pass
+
+
+class StoreCorrupt(Exception):
+    pass
+
+
+def retry_busy(op):
+    """Run op, retrying on EBUSY/EAGAIN with exponential backoff (~0.6 s total)."""
+    for delay in BUSY_DELAYS + (None,):
+        try:
+            return op()
+        except OSError as e:
+            if e.errno not in BUSY_ERRNOS:
+                raise
+            if delay is None:
+                raise DeviceBusy(f"device busy: {e}")
+            time.sleep(delay)
 
 
 def get_udev_hint():
@@ -249,19 +289,44 @@ def encode_field(name, val, buf):
 
 
 class FakeTransport:
+    """File-backed transport for tests.
+
+    Hooks in the fake dir: 'denied', 'readonly', 'version', 'config', plus
+    'writes' (one line appended per write), 'busy' (N operations raise EBUSY)
+    and 'drift' (replaces config on the second read after the first write).
+    """
+
     def __init__(self, fake_dir):
         self.fake_dir = fake_dir
         self.device_str = f"fake:{fake_dir}"
+        self._reads_after_write = None
 
-    def check_presence_and_access(self):
+    def _path(self, name):
+        return os.path.join(self.fake_dir, name)
+
+    def _check(self):
+        busy_file = self._path("busy")
+        if os.path.exists(busy_file):
+            with open(busy_file, "r") as f:
+                n = int(f.read().strip() or "0")
+            if n > 0:
+                with open(busy_file, "w") as f:
+                    f.write(f"{n - 1}\n")
+                raise OSError(errno.EBUSY, os.strerror(errno.EBUSY))
         if not os.path.isdir(self.fake_dir):
             raise DeviceAbsent(f"Fake directory '{self.fake_dir}' not found")
-        if os.path.exists(os.path.join(self.fake_dir, "denied")):
+        if os.path.exists(self._path("denied")):
             raise PermissionDenied(f"Access denied in fake '{self.fake_dir}'")
 
+    def check_presence_and_access(self):
+        retry_busy(self._check)
+
     def get_version(self):
-        self.check_presence_and_access()
-        version_file = os.path.join(self.fake_dir, "version")
+        return retry_busy(self._get_version)
+
+    def _get_version(self):
+        self._check()
+        version_file = self._path("version")
         if os.path.exists(version_file):
             try:
                 with open(version_file, "r") as f:
@@ -274,10 +339,22 @@ class FakeTransport:
         return 5, 3, "5.3"
 
     def read_config(self):
-        self.check_presence_and_access()
-        config_file = os.path.join(self.fake_dir, "config")
+        return retry_busy(self._read_config)
+
+    def _read_config(self):
+        self._check()
+        config_file = self._path("config")
         if not os.path.exists(config_file):
             raise DeviceAbsent(f"Config file not found in fake dir: {config_file}")
+        if self._reads_after_write is not None:
+            self._reads_after_write += 1
+            drift_file = self._path("drift")
+            if self._reads_after_write == 2 and os.path.exists(drift_file):
+                with open(drift_file, "r") as f:
+                    drift = f.read()
+                with open(config_file, "w") as f:
+                    f.write(drift)
+                os.unlink(drift_file)
         with open(config_file, "r") as f:
             content = f.read().strip()
         data = bytes.fromhex(content)
@@ -286,15 +363,21 @@ class FakeTransport:
         return data
 
     def write_config(self, block):
-        self.check_presence_and_access()
+        retry_busy(lambda: self._write_config(block))
+
+    def _write_config(self, block):
+        self._check()
         if len(block) != CONFIG_LEN:
             raise ValueError(f"Config block must be {CONFIG_LEN} bytes")
-        if os.path.exists(os.path.join(self.fake_dir, "readonly")):
+        hex_str = " ".join(f"{b:02x}" for b in block) + "\n"
+        with open(self._path("writes"), "a") as f:
+            f.write(hex_str)
+        if self._reads_after_write is None:
+            self._reads_after_write = 0
+        if os.path.exists(self._path("readonly")):
             # Silently drop writes per specification
             return
-        config_file = os.path.join(self.fake_dir, "config")
-        hex_str = " ".join(f"{b:02x}" for b in block) + "\n"
-        with open(config_file, "w") as f:
+        with open(self._path("config"), "w") as f:
             f.write(hex_str)
 
 
@@ -332,11 +415,11 @@ class UsbTransport:
         if not self.device_path or not os.path.exists(self.device_path):
             raise DeviceAbsent("Elgato Wave:3 USB device not found")
         try:
-            return os.open(self.device_path, os.O_RDWR)
+            return retry_busy(lambda: os.open(self.device_path, os.O_RDWR))
         except OSError as e:
             if e.errno in (errno.EACCES, errno.EPERM):
                 raise PermissionDenied(f"Permission denied: {self.device_path}")
-            elif e.errno == errno.ENOENT:
+            elif e.errno in (errno.ENOENT, errno.ENODEV):
                 raise DeviceAbsent(f"Device node missing: {self.device_path}")
             raise
 
@@ -349,13 +432,13 @@ class UsbTransport:
     def _read_control(self, fd, wvalue, length):
         buf = ctypes.create_string_buffer(length)
         c = Ctrl(RT_CLASS_IN, BREQUEST_READ, wvalue, WINDEX, length, 1000, ctypes.cast(buf, ctypes.c_void_p))
-        got = fcntl.ioctl(fd, USBDEVFS_CONTROL, c)
+        got = retry_busy(lambda: fcntl.ioctl(fd, USBDEVFS_CONTROL, c))
         return buf.raw[:got]
 
     def _write_control(self, fd, wvalue, data):
         buf = ctypes.create_string_buffer(bytes(data), len(data))
         c = Ctrl(RT_CLASS_OUT, BREQUEST_WRITE, wvalue, WINDEX, len(data), 1000, ctypes.cast(buf, ctypes.c_void_p))
-        return fcntl.ioctl(fd, USBDEVFS_CONTROL, c)
+        return retry_busy(lambda: fcntl.ioctl(fd, USBDEVFS_CONTROL, c))
 
     def get_version(self):
         fd = self._open()
@@ -407,7 +490,17 @@ def file_lock():
         yield
         return
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        deadline = time.monotonic() + LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as e:
+                if e.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise DeviceBusy("timed out waiting for device lock")
+                time.sleep(LOCK_POLL)
         yield
     finally:
         try:
@@ -417,28 +510,143 @@ def file_lock():
         os.close(fd)
 
 
+def store_path():
+    path = os.environ.get("WAVE3_HW_STORE")
+    if path:
+        return path
+    state_home = os.environ.get("XDG_STATE_HOME")
+    if not state_home or not os.path.isabs(state_home):
+        state_home = os.path.join(os.path.expanduser("~"), ".local", "state")
+    return os.path.join(state_home, "abduldotdev.wave3", "hw.json")
+
+
+def canonical_value(name, val):
+    """Return the canonical stored value for a JSON value, or raise ValueError."""
+    if isinstance(val, bool) or not isinstance(val, (int, float, str)):
+        raise ValueError("wrong type")
+    if isinstance(val, float) and not math.isfinite(val):
+        raise ValueError("not a finite number")
+    return parse_field_value(name, str(val))
+
+
+def load_store(path):
+    """Return the stored fields, or None when the store is missing.
+
+    Raises StoreCorrupt for an unusable file and OSError on read failure.
+    """
+    try:
+        with open(path, "r") as f:
+            text = f.read()
+    except OSError as e:
+        if e.errno in (errno.ENOENT, errno.ENOTDIR):
+            return None
+        raise
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        raise StoreCorrupt(f"invalid JSON: {e}")
+    if not isinstance(data, dict):
+        raise StoreCorrupt("not a JSON object")
+    if data.get("version") != STORE_VERSION or isinstance(data.get("version"), bool):
+        raise StoreCorrupt(f"unsupported version {data.get('version')!r}")
+    raw_fields = data.get("fields")
+    if not isinstance(raw_fields, dict):
+        raise StoreCorrupt("'fields' is not an object")
+    fields = {}
+    for name in STORED_FIELDS:
+        if name not in raw_fields:
+            continue
+        try:
+            fields[name] = canonical_value(name, raw_fields[name])
+        except ValueError:
+            sys.stderr.write(f"wave3-hw: store: ignoring {name}\n")
+    return fields
+
+
+def write_store(path, fields):
+    """Atomically replace the store with the given fields."""
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    data = {"version": STORE_VERSION, "fields": {n: fields[n] for n in STORED_FIELDS if n in fields}}
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".hw.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def load_store_for_update(path):
+    """Load the store for a read-modify-write; a corrupt store is replaced."""
+    try:
+        fields = load_store(path)
+    except StoreCorrupt as e:
+        sys.stderr.write(f"wave3-hw: store: replacing corrupt store {path}: {e}\n")
+        return {}
+    return fields or {}
+
+
+def read_block(transport):
+    """Presence/access check, version gate and config read. Caller holds the lock."""
+    transport.check_presence_and_access()
+    major, minor, api_str = transport.get_version()
+    if (major, minor) not in SUPPORTED_APIS:
+        raise UnsupportedApiVersion(api_str)
+    return transport.read_config()
+
+
+def classify_error(e):
+    """Map a device failure to (exit code, apply result, message)."""
+    if isinstance(e, DeviceAbsent):
+        return 3, "absent", "device absent"
+    if isinstance(e, PermissionDenied):
+        return 4, "denied", get_udev_hint()
+    if isinstance(e, UnsupportedApiVersion):
+        return 5, "unsupported", str(e)
+    if isinstance(e, ReadBackMismatch):
+        return 6, "mismatch", str(e)
+    if isinstance(e, DeviceBusy):
+        return 8, "busy", str(e)
+    return 1, "error", str(e)
+
+
+def field_bytes(name, buf):
+    spec = FIELD_SPECS[name]
+    return bytes(buf[spec["offset"] : spec["offset"] + spec["size"]])
+
+
 def cmd_status(transport):
     try:
-        try:
-            transport.check_presence_and_access()
-        except DeviceAbsent:
-            print("present=no")
-            print("access=")
-            print("device=")
-            print("api=")
-            print("supported=no")
-            return 0
-        except PermissionDenied:
-            print("present=yes")
-            print("access=denied")
-            print(f"device={transport.device_str}")
-            print("api=")
-            print("supported=no")
-            return 0
+        with file_lock():
+            try:
+                transport.check_presence_and_access()
+            except DeviceAbsent:
+                print("present=no")
+                print("access=")
+                print("device=")
+                print("api=")
+                print("supported=no")
+                return 0
+            except PermissionDenied:
+                print("present=yes")
+                print("access=denied")
+                print(f"device={transport.device_str}")
+                print("api=")
+                print("supported=no")
+                return 0
 
-        major, minor, api_str = transport.get_version()
-        supported = "yes" if (major, minor) in ((5, 3), (5, 4)) else "no"
-        config = transport.read_config()
+            major, minor, api_str = transport.get_version()
+            supported = "yes" if (major, minor) in SUPPORTED_APIS else "no"
+            config = transport.read_config()
 
         print("present=yes")
         print("access=ok")
@@ -452,8 +660,12 @@ def cmd_status(transport):
         raw_hex = " ".join(f"{b:02x}" for b in config)
         print(f"raw={raw_hex}")
         return 0
+    except DeviceBusy:
+        print("error=busy")
+        return 0
     except Exception as e:
-        print(f"error={e}")
+        msg = " ".join(str(e).splitlines())
+        print(f"error={msg}")
         return 0
 
 
@@ -468,56 +680,187 @@ def cmd_set(transport, field, value_str):
         sys.stderr.write(f"wave3-hw: {e}\n")
         return 2
 
-    with file_lock():
-        try:
-            transport.check_presence_and_access()
-        except DeviceAbsent:
-            sys.stderr.write("wave3-hw: device absent\n")
-            return 3
-        except PermissionDenied:
-            sys.stderr.write(f"wave3-hw: {get_udev_hint()}\n")
-            return 4
-
-        try:
-            major, minor, api_str = transport.get_version()
-        except Exception as e:
-            sys.stderr.write(f"wave3-hw: failed to get device version: {e}\n")
-            return 1
-
-        if (major, minor) not in ((5, 3), (5, 4)):
-            sys.stderr.write(f"wave3-hw: unsupported API version {api_str}\n")
-            return 5
-
-        try:
-            old_config = transport.read_config()
-        except Exception as e:
-            sys.stderr.write(f"wave3-hw: failed to read config: {e}\n")
-            return 1
-
-        new_config = encode_field(field, parsed_val, old_config)
-
-        try:
+    try:
+        with file_lock():
+            old_config = read_block(transport)
+            new_config = encode_field(field, parsed_val, old_config)
             transport.write_config(new_config)
-        except Exception as e:
-            sys.stderr.write(f"wave3-hw: failed to write config: {e}\n")
-            return 1
-
-        try:
             read_back = transport.read_config()
-        except Exception as e:
-            sys.stderr.write(f"wave3-hw: failed to read back config: {e}\n")
-            return 1
 
-        spec = FIELD_SPECS[field]
-        offset = spec["offset"]
-        size = spec["size"]
-        if read_back[offset : offset + size] != new_config[offset : offset + size]:
-            sys.stderr.write(f"wave3-hw: read-back verification failed for field '{field}'\n")
-            return 6
+            if field_bytes(field, read_back) != field_bytes(field, new_config):
+                raise ReadBackMismatch(f"read-back verification failed for field '{field}'")
 
-        stored_val = decode_field(field, read_back)
-        print(f"{field}={format_field(field, stored_val)}")
+            stored_val = decode_field(field, read_back)
+            print(f"{field}={format_field(field, stored_val)}")
+
+            if field not in STORED_FIELDS:
+                print("saved=no")
+                return 0
+            path = store_path()
+            try:
+                fields = load_store_for_update(path)
+                fields[field] = canonical_value(field, stored_val)
+                write_store(path, fields)
+            except Exception as e:
+                print("saved=error")
+                sys.stderr.write(f"wave3-hw: could not save setting: {e}\n")
+                return 0
+            print("saved=yes")
+            return 0
+    except Exception as e:
+        code, _, msg = classify_error(e)
+        sys.stderr.write(f"wave3-hw: {msg}\n")
+        return code
+
+
+def parse_apply_args(args):
+    settle = 0.0
+    retries = 0
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if "=" in arg:
+            name, val = arg.split("=", 1)
+        else:
+            name = arg
+            i += 1
+            if i >= len(args):
+                raise ValueError(f"missing value for {name}")
+            val = args[i]
+        if name == "--settle":
+            try:
+                settle = float(val)
+            except ValueError:
+                raise ValueError(f"bad --settle value '{val}'")
+            if not 0.0 <= settle <= 30.0:
+                raise ValueError(f"--settle must be between 0 and 30, got '{val}'")
+        elif name == "--retries":
+            try:
+                retries = int(val)
+            except ValueError:
+                raise ValueError(f"bad --retries value '{val}'")
+            if not 0 <= retries <= 10:
+                raise ValueError(f"--retries must be between 0 and 10, got '{val}'")
+        else:
+            raise ValueError(f"unknown apply flag '{name}'")
+        i += 1
+    return settle, retries
+
+
+def apply_attempt(transport, fields, written):
+    """One locked read-modify-write of the stored fields that differ.
+
+    Bytes outside the stored fields (reserved 2-3, mute 4, volume_select 12)
+    are copied from the block just read. Fields written are appended to
+    'written' before the write so a failed read-back still reports them.
+    """
+    with file_lock():
+        config = read_block(transport)
+        new_config = config
+        differing = []
+        for name in STORED_FIELDS:
+            if name in fields and field_bytes(name, config) != field_bytes(name, encode_field(name, fields[name], config)):
+                new_config = encode_field(name, fields[name], new_config)
+                differing.append(name)
+        if not differing:
+            return
+        written.extend(differing)
+        transport.write_config(new_config)
+        read_back = transport.read_config()
+        bad = [n for n in fields if field_bytes(n, read_back) != field_bytes(n, new_config)]
+        if bad:
+            raise ReadBackMismatch(f"read-back verification failed for {','.join(bad)}")
+
+
+def cmd_apply(transport, args):
+    try:
+        settle, retries = parse_apply_args(args)
+    except ValueError as e:
+        sys.stderr.write(f"wave3-hw: {e}\n")
+        return 2
+
+    try:
+        fields = load_store(store_path())
+    except (StoreCorrupt, OSError) as e:
+        sys.stderr.write(f"wave3-hw: store: {e}\n")
+        print("store=corrupt")
+        print("changed=")
+        print("reapplied=")
+        print("result=error")
+        return 7
+
+    if not fields:
+        print("store=missing" if fields is None else "store=ok")
+        print("changed=")
+        print("reapplied=")
+        print("result=noop")
         return 0
+
+    changed = []
+    reapplied = []
+    failure = None
+    for attempt in range(retries + 1):
+        if attempt:
+            time.sleep(settle)
+        written = changed if attempt == 0 else reapplied
+        try:
+            apply_attempt(transport, fields, written)
+            failure = None
+        except Exception as e:
+            failure = e
+            code, result, msg = classify_error(e)
+            sys.stderr.write(f"wave3-hw: apply attempt {attempt}: {' '.join(msg.splitlines())}\n")
+            if result not in ("absent", "denied", "busy", "mismatch"):
+                break
+
+    print("store=ok")
+    print(f"changed={','.join(n for n in STATUS_FIELDS if n in changed)}")
+    print(f"reapplied={','.join(n for n in STATUS_FIELDS if n in reapplied)}")
+    if failure is not None:
+        code, result, _ = classify_error(failure)
+        print(f"result={result}")
+        return code
+    print("result=applied" if changed or reapplied else "result=noop")
+    return 0
+
+
+def cmd_save(transport):
+    try:
+        with file_lock():
+            config = read_block(transport)
+            fields = {n: canonical_value(n, decode_field(n, config)) for n in STORED_FIELDS}
+            try:
+                write_store(store_path(), fields)
+            except Exception as e:
+                sys.stderr.write(f"wave3-hw: could not save setting: {e}\n")
+                return 1
+    except Exception as e:
+        code, _, msg = classify_error(e)
+        sys.stderr.write(f"wave3-hw: {msg}\n")
+        return code
+
+    for name in STORED_FIELDS:
+        print(f"{name}={format_field(name, fields[name])}")
+    print("saved=yes")
+    return 0
+
+
+def cmd_forget():
+    try:
+        with file_lock():
+            try:
+                os.unlink(store_path())
+                forgotten = "yes"
+            except OSError as e:
+                if e.errno not in (errno.ENOENT, errno.ENOTDIR):
+                    sys.stderr.write(f"wave3-hw: could not forget settings: {e}\n")
+                    return 1
+                forgotten = "no"
+    except DeviceBusy as e:
+        sys.stderr.write(f"wave3-hw: {e}\n")
+        return 8
+    print(f"forgotten={forgotten}")
+    return 0
 
 
 def main(argv=None):
@@ -525,21 +868,29 @@ def main(argv=None):
         argv = sys.argv[1:]
 
     if not argv:
-        sys.stderr.write("wave3-hw: usage: wave3-hw status | wave3-hw set <field> <value>\n")
+        sys.stderr.write(f"wave3-hw: {USAGE}\n")
         return 2
 
     cmd = argv[0]
-    transport = get_transport()
 
     if cmd == "status":
-        return cmd_status(transport)
+        return cmd_status(get_transport())
     elif cmd == "set":
         if len(argv) != 3:
             sys.stderr.write("wave3-hw: usage: wave3-hw set <field> <value>\n")
             return 2
         field = argv[1]
         value_str = argv[2]
-        return cmd_set(transport, field, value_str)
+        return cmd_set(get_transport(), field, value_str)
+    elif cmd == "apply":
+        return cmd_apply(get_transport(), argv[1:])
+    elif cmd == "save" and len(argv) == 1:
+        return cmd_save(get_transport())
+    elif cmd == "forget" and len(argv) == 1:
+        return cmd_forget()
+    elif cmd in ("save", "forget"):
+        sys.stderr.write(f"wave3-hw: {USAGE}\n")
+        return 2
     else:
         sys.stderr.write(f"wave3-hw: unknown command '{cmd}'\n")
         return 2
