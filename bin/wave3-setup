@@ -1,0 +1,321 @@
+#!/bin/bash
+set -euo pipefail
+
+# bin/wave3-setup: manage system integrations (WirePlumber drop-in, systemd user watcher, udev status, keep_default config)
+# Never calls sudo, never restarts pipewire/wireplumber, never modifies audio defaults/volumes directly.
+
+PLUGIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]:-$0}")")/.." && pwd -P)"
+CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME:-}/.config}"
+SYSTEMCTL="${WAVE3_SYSTEMCTL:-systemctl}"
+UDEV_DIRS="${WAVE3_UDEV_RULES_DIRS:-/etc/udev/rules.d /run/udev/rules.d /usr/lib/udev/rules.d}"
+CFG_FILE="${WAVE3_CONFIG:-$CONFIG_HOME/abduldotdev.wave3/config}"
+
+WP_CONF="$CONFIG_HOME/wireplumber/wireplumber.conf.d/51-elgato-wave3.conf"
+WP_PLUGIN_FILE="$PLUGIN_DIR/wireplumber/51-elgato-wave3.conf"
+
+SVC_FILE="$CONFIG_HOME/systemd/user/wave3-watch.service"
+SVC_PLUGIN_FILE="$PLUGIN_DIR/systemd/wave3-watch.service"
+SVC_MARKER="# Managed by abduldotdev.wave3 wave3-setup"
+
+get_wireplumber_status() {
+  if [[ ! -e "$WP_CONF" && ! -L "$WP_CONF" ]]; then
+    echo "missing"
+    return 0
+  fi
+  if [[ -L "$WP_CONF" ]]; then
+    local resolved
+    resolved="$(readlink -f "$WP_CONF" 2>/dev/null || true)"
+    if [[ -n "$resolved" && "$resolved" == "$WP_PLUGIN_FILE" ]]; then
+      echo "installed"
+      return 0
+    fi
+    if [[ -n "$resolved" && -f "$resolved" ]] && cmp -s "$resolved" "$WP_PLUGIN_FILE"; then
+      echo "installed"
+      return 0
+    fi
+  fi
+  echo "foreign"
+  return 0
+}
+
+get_service_status() {
+  if [[ ! -e "$SVC_FILE" && ! -L "$SVC_FILE" ]]; then
+    echo "missing"
+    return 0
+  fi
+  if [[ -L "$SVC_FILE" ]]; then
+    local resolved
+    resolved="$(readlink -f "$SVC_FILE" 2>/dev/null || true)"
+    if [[ -n "$resolved" && ( "$resolved" == "$SVC_PLUGIN_FILE" || "$resolved" == "$PLUGIN_DIR"/* ) ]]; then
+      echo "installed"
+      return 0
+    fi
+  fi
+  if [[ -f "$SVC_FILE" && ! -L "$SVC_FILE" ]]; then
+    if grep -qF "$SVC_MARKER" "$SVC_FILE" 2>/dev/null; then
+      echo "installed"
+      return 0
+    fi
+  fi
+  echo "foreign"
+  return 0
+}
+
+get_service_enabled() {
+  if "$SYSTEMCTL" --user is-enabled wave3-watch.service >/dev/null 2>&1; then
+    echo "yes"
+  else
+    echo "no"
+  fi
+}
+
+get_service_active() {
+  if "$SYSTEMCTL" --user is-active wave3-watch.service >/dev/null 2>&1; then
+    echo "yes"
+  else
+    echo "no"
+  fi
+}
+
+get_udev_status() {
+  local dir
+  for dir in $UDEV_DIRS; do
+    if [[ -f "$dir/70-elgato-wave3.rules" || -e "$dir/70-elgato-wave3.rules" ]]; then
+      echo "installed"
+      return 0
+    fi
+  done
+  echo "missing"
+  return 0
+}
+
+get_keep_default() {
+  if [[ -f "$CFG_FILE" ]]; then
+    local val
+    val="$(grep -E '^[[:space:]]*keep_default=' "$CFG_FILE" 2>/dev/null | tail -n 1 | cut -d= -f2- | tr -d '[:space:]' || true)"
+    if [[ "$val" == "no" ]]; then
+      echo "no"
+      return 0
+    fi
+  fi
+  echo "yes"
+  return 0
+}
+
+get_setup_status() {
+  local wp="$1" svc="$2" svc_en="$3" ud="$4"
+  if [[ "$wp" == "installed" && "$svc" == "installed" && "$svc_en" == "yes" && "$ud" == "installed" ]]; then
+    echo "complete"
+  elif [[ "$wp" == "missing" && "$svc" == "missing" ]]; then
+    echo "none"
+  else
+    echo "partial"
+  fi
+}
+
+get_udev_command() {
+  printf 'sudo install -m644 '\''%s/udev/70-elgato-wave3.rules'\'' /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger' "$PLUGIN_DIR"
+}
+
+cmd_status() {
+  local wp svc svc_en svc_act ud kd setup
+  wp="$(get_wireplumber_status)"
+  svc="$(get_service_status)"
+  svc_en="$(get_service_enabled)"
+  svc_act="$(get_service_active)"
+  ud="$(get_udev_status)"
+  kd="$(get_keep_default)"
+  setup="$(get_setup_status "$wp" "$svc" "$svc_en" "$ud")"
+
+  printf 'wireplumber=%s\n' "$wp"
+  printf 'service=%s\n' "$svc"
+  printf 'service_enabled=%s\n' "$svc_en"
+  printf 'service_active=%s\n' "$svc_act"
+  printf 'udev=%s\n' "$ud"
+  printf 'keep_default=%s\n' "$kd"
+  printf 'setup=%s\n' "$setup"
+  printf 'plugin_dir=%s\n' "$PLUGIN_DIR"
+  printf 'udev_command=%s\n' "$(get_udev_command)"
+  exit 0
+}
+
+cmd_install() {
+  local has_error=0
+
+  # 1. WirePlumber drop-in
+  local wp_status
+  wp_status="$(get_wireplumber_status)"
+  if [[ "$wp_status" == "installed" ]]; then
+    printf 'ok: %s already installed\n' "$WP_CONF"
+  elif [[ "$wp_status" == "foreign" ]]; then
+    printf 'wave3-setup: skip (not ours): %s\n' "$WP_CONF" >&2
+    has_error=1
+  else
+    mkdir -p "$(dirname "$WP_CONF")"
+    ln -s "$WP_PLUGIN_FILE" "$WP_CONF"
+    printf 'linked: %s\n' "$WP_CONF"
+  fi
+
+  # 2. Service unit
+  local svc_status
+  svc_status="$(get_service_status)"
+  if [[ "$svc_status" == "installed" ]]; then
+    printf 'ok: %s already installed\n' "$SVC_FILE"
+  elif [[ "$svc_status" == "foreign" ]]; then
+    printf 'wave3-setup: skip (not ours): %s\n' "$SVC_FILE" >&2
+    has_error=1
+  else
+    mkdir -p "$(dirname "$SVC_FILE")"
+    local exec_start="$PLUGIN_DIR/bin/wave3-watch"
+    if [[ "$exec_start" == *" "* ]]; then
+      exec_start="\"$exec_start\""
+    fi
+    cat > "$SVC_FILE" <<EOF
+# Managed by abduldotdev.wave3 wave3-setup — removed by \`wave3-setup uninstall\`
+[Unit]
+Description=Keep the Elgato Wave:3 as the default microphone and restore its settings
+After=pipewire-pulse.service wireplumber.service
+ConditionPathExists=$PLUGIN_DIR/bin/wave3-watch
+
+[Service]
+ExecStart=$exec_start
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+EOF
+    printf 'wrote: %s\n' "$SVC_FILE"
+  fi
+
+  # 3. Systemctl commands (only if service is not foreign)
+  if [[ "$svc_status" != "foreign" ]]; then
+    if ! "$SYSTEMCTL" --user daemon-reload; then
+      printf 'wave3-setup: failed to daemon-reload\n' >&2
+      has_error=1
+    fi
+    if ! "$SYSTEMCTL" --user enable --now wave3-watch.service; then
+      printf 'wave3-setup: failed to enable wave3-watch.service\n' >&2
+      has_error=1
+    fi
+  fi
+
+  # 4. Final note
+  printf 'Note: WirePlumber reads the rule on its next start (systemctl --user restart wireplumber or re-login; drops open audio streams).\n'
+  if [[ "$(get_udev_status)" == "missing" ]]; then
+    printf 'Hardware controls need one sudo step: %s\n' "$(get_udev_command)"
+  fi
+
+  if [[ "$has_error" -ne 0 ]]; then
+    exit 1
+  fi
+  exit 0
+}
+
+cmd_uninstall() {
+  local removed_count=0
+  local svc_status wp_status
+  svc_status="$(get_service_status)"
+  wp_status="$(get_wireplumber_status)"
+
+  # Service
+  if [[ "$svc_status" == "installed" ]]; then
+    "$SYSTEMCTL" --user disable --now wave3-watch.service >/dev/null 2>&1 || true
+    rm -f "$SVC_FILE"
+    printf 'removed: %s\n' "$SVC_FILE"
+    "$SYSTEMCTL" --user daemon-reload >/dev/null 2>&1 || true
+    removed_count=$((removed_count + 1))
+  fi
+
+  # WirePlumber
+  if [[ "$wp_status" == "installed" ]]; then
+    rm -f "$WP_CONF"
+    printf 'removed: %s\n' "$WP_CONF"
+    removed_count=$((removed_count + 1))
+  fi
+
+  if [[ "$removed_count" -eq 0 ]]; then
+    printf 'nothing to remove\n'
+  fi
+
+  # udev reminder
+  if [[ "$(get_udev_status)" == "installed" ]]; then
+    printf 'sudo rm -f /etc/udev/rules.d/70-elgato-wave3.rules && sudo udevadm control --reload && sudo udevadm trigger\n'
+  fi
+
+  exit 0
+}
+
+cmd_keep_default() {
+  if [[ $# -ne 1 ]]; then
+    printf 'Usage: wave3-setup keep-default on|off\n' >&2
+    exit 2
+  fi
+
+  local target_val
+  case "$1" in
+    on) target_val="yes" ;;
+    off) target_val="no" ;;
+    *)
+      printf 'wave3-setup: invalid keep-default argument '\''%s'\'' (expected on|off)\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+
+  local cfg_dir
+  cfg_dir="$(dirname "$CFG_FILE")"
+  mkdir -p "$cfg_dir"
+
+  local tmp_file
+  tmp_file="$(mktemp "$cfg_dir/config.XXXXXX")"
+
+  local replaced=0
+  if [[ -f "$CFG_FILE" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" =~ ^[[:space:]]*keep_default= ]]; then
+        if [[ "$replaced" -eq 0 ]]; then
+          printf 'keep_default=%s\n' "$target_val" >> "$tmp_file"
+          replaced=1
+        fi
+      else
+        printf '%s\n' "$line" >> "$tmp_file"
+      fi
+    done < "$CFG_FILE"
+  fi
+
+  if [[ "$replaced" -eq 0 ]]; then
+    printf 'keep_default=%s\n' "$target_val" >> "$tmp_file"
+  fi
+
+  mv "$tmp_file" "$CFG_FILE"
+  printf 'keep_default=%s\n' "$target_val"
+  exit 0
+}
+
+if [[ $# -eq 0 ]]; then
+  printf 'Usage: wave3-setup status|install|uninstall|keep-default on|off\n' >&2
+  exit 2
+fi
+
+cmd="$1"
+shift
+
+case "$cmd" in
+  status)
+    cmd_status "$@"
+    ;;
+  install)
+    cmd_install "$@"
+    ;;
+  uninstall)
+    cmd_uninstall "$@"
+    ;;
+  keep-default)
+    cmd_keep_default "$@"
+    ;;
+  *)
+    printf 'wave3-setup: unknown command '\''%s'\''\n' "$cmd" >&2
+    printf 'Usage: wave3-setup status|install|uninstall|keep-default on|off\n' >&2
+    exit 2
+    ;;
+esac

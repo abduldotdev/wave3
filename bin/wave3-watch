@@ -43,6 +43,20 @@ trap cleanup EXIT
 
 ensure_default() { "$RESET" --ensure-default >/dev/null 2>&1 || true; }
 
+get_keep_default() {
+  local cfg="${WAVE3_CONFIG:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/abduldotdev.wave3/config}"
+  if [[ -f "$cfg" ]]; then
+    local val
+    val="$(grep -E '^[[:space:]]*keep_default=' "$cfg" 2>/dev/null | tail -n 1 | cut -d= -f2- | tr -d '[:space:]' || true)"
+    if [[ "$val" == "no" ]]; then
+      echo "no"
+      return 0
+    fi
+  fi
+  echo "yes"
+  return 0
+}
+
 # kill -0 is true for a zombie, so a finished apply would look busy forever.
 # The child removes the token on exit; that is what "done" means.
 apply_running() {
@@ -86,7 +100,11 @@ start_apply() {
 }
 
 on_appear() {
-  ensure_default
+  if [[ "$(get_keep_default)" == "no" ]]; then
+    echo "wave3-watch: keep_default=no, leaving the default source alone" >&2
+  else
+    ensure_default
+  fi
   start_apply
 }
 
