@@ -123,8 +123,14 @@ PopupWindow {
     property bool controlEnabled: true
     signal committed(int val)
 
+    // Last committed value, shown until the next status read reports a change,
+    // so the thumb does not jump back to the old percent on release.
+    property int pendingVal: -1
     property int liveVal: Model.sliderValue(percent)
-    onPercentChanged: if (!slider.dragging) liveVal = Model.sliderValue(percent)
+    onPercentChanged: {
+      pendingVal = -1
+      if (!slider.dragging) liveVal = Model.sliderValue(percent)
+    }
 
     width: parent.width
     spacing: 3
@@ -135,6 +141,7 @@ PopupWindow {
       repeat: false
       onTriggered: {
         root.isDragging = false
+        ws.pendingVal = ws.liveVal
         ws.committed(ws.liveVal)
       }
     }
@@ -154,7 +161,8 @@ PopupWindow {
 
       Text {
         id: valText
-        text: slider.dragging ? ws.liveVal + " %" : Model.volumeLabel(ws.percent)
+        text: slider.dragging ? ws.liveVal + " %"
+          : (ws.pendingVal >= 0 ? ws.pendingVal + " %" : Model.volumeLabel(ws.percent))
         color: root.safeMuted
         font.family: root.fontFamily
         font.pixelSize: 11
@@ -176,7 +184,7 @@ PopupWindow {
         maximum: 100
         step: 1
         integer: true
-        value: Model.sliderValue(ws.percent)
+        value: ws.pendingVal >= 0 ? ws.pendingVal : Model.sliderValue(ws.percent)
 
         onMoved: function(v) {
           ws.liveVal = Math.round(v)
@@ -187,6 +195,7 @@ PopupWindow {
           debounceTimer.stop()
           root.isDragging = false
           ws.liveVal = Math.round(v)
+          ws.pendingVal = ws.liveVal
           ws.committed(ws.liveVal)
         }
       }

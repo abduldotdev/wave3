@@ -14,6 +14,8 @@ BarWidget {
   readonly property string level: Model.statusLevel(root.status)
   property bool resetting: false
   property string errorText: ""
+  // A read asked for while one is running; it may predate a set, so run again.
+  property bool refreshAgain: false
 
   // Set commands waiting for setProc, keyed by control; the latest value wins.
   property var pendingSets: ({})
@@ -28,7 +30,8 @@ BarWidget {
   implicitHeight: button.implicitHeight
 
   function refresh() {
-    if (!statusProc.running) statusProc.running = true
+    if (statusProc.running) root.refreshAgain = true
+    else statusProc.running = true
   }
 
   function runReset(args) {
@@ -101,6 +104,11 @@ BarWidget {
         if (next.present && !root.status.present) root.meterAvailable = true
         root.status = next
       }
+    }
+    onExited: {
+      if (!root.refreshAgain) return
+      root.refreshAgain = false
+      statusProc.running = true
     }
   }
 
