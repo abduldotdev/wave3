@@ -519,5 +519,70 @@ watch_apply_survives "exit 3" 3
 watch_apply_survives "exit 1" 1
 watch_apply_survives "missing hw" missing
 
+# --- watcher keep_default config ---
+fresh yes
+watch_events
+: > "$STUB/resets"
+canned_applied
+cat > "$TMP/config-no" <<EOF
+keep_default=no
+EOF
+set +e
+WAVE3_HW="$TMP/fake-hw" WAVE3_RESET="$TMP/fake-reset" WAVE3_CONFIG="$TMP/config-no" \
+  "$ROOT/bin/wave3-watch" 2>"$TMP/watch.err"
+rc=$?
+set -e
+check "watch keep_default=no: skips ensure-default" '[ ! -s "$STUB/resets" ]'
+check "watch keep_default=no: still runs hw apply" '[ "$(cat "$STUB/hw.argv")" = "apply --settle 2.5 --retries 2" ]'
+check "watch keep_default=no: logs skip message to stderr" 'grep -qx "wave3-watch: keep_default=no, leaving the default source alone" "$TMP/watch.err"'
+check "watch keep_default=no: exits 1 when subscribe ends" '[ "$rc" -eq 1 ] && grep -q "subscribe ended" "$TMP/watch.err"'
+
+fresh yes
+watch_events
+: > "$STUB/resets"
+canned_applied
+cat > "$TMP/config-yes" <<EOF
+keep_default=yes
+EOF
+set +e
+WAVE3_HW="$TMP/fake-hw" WAVE3_RESET="$TMP/fake-reset" WAVE3_CONFIG="$TMP/config-yes" \
+  "$ROOT/bin/wave3-watch" 2>"$TMP/watch.err"
+rc=$?
+set -e
+check "watch keep_default=yes: runs ensure-default" '[ "$(cat "$STUB/resets")" = "$(printf "reset --ensure-default\n%.0s" 1 2 3)" ]'
+check "watch keep_default=yes: does not log skip message" '! grep -q "leaving the default source alone" "$TMP/watch.err"'
+
+# Dynamic toggle across events
+fresh yes
+cat > "$TMP/config-dynamic" <<EOF
+keep_default=yes
+EOF
+cat > "$STUB/events" <<'EOF'
+Event 'new' on card #48
+EOF
+touch "$STUB/events-wait"
+: > "$STUB/resets"
+: > "$STUB/watch.err"
+canned_applied
+(
+  for _ in $(seq 1 100); do
+    [ -f "$STUB/resets" ] && [ -s "$STUB/resets" ] && break
+    sleep 0.05
+  done
+  echo "keep_default=no" > "$TMP/config-dynamic"
+) &
+dyn_pid=$!
+set +e
+WAVE3_HW="$TMP/fake-hw" WAVE3_RESET="$TMP/fake-reset" WAVE3_CONFIG="$TMP/config-dynamic" WAVE3_APPLY_INTERVAL=0 \
+  "$ROOT/bin/wave3-watch" 2>"$STUB/watch.err"
+wait "$dyn_pid" 2>/dev/null || true
+set -e
+check "watch keep_default dynamic: resets at startup then skips on event" '[ "$(cat "$STUB/resets")" = "reset --ensure-default" ]'
+check "watch keep_default dynamic: logs skip message on second event" 'grep -qx "wave3-watch: keep_default=no, leaving the default source alone" "$STUB/watch.err"'
+check "watch keep_default dynamic: still runs hw apply on second event" '[ "$(wc -l < "$STUB/hw.argv")" -eq 2 ]'
+
+# Run dedicated setup test suite
+bash "$ROOT/tests/setup.test.sh"
+
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }
 echo "all script tests passed"
