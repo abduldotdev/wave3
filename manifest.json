@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "abduldotdev.wave3",
   "name": "Wave:3",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "abduldotdev",
   "license": "MIT",
-  "description": "Keeps an Elgato Wave:3 USB microphone as the always-working default input: pins its profile and priority in WirePlumber, re-defaults it when it reappears, and adds a bar icon with a one-click reset.",
+  "description": "Keeps an Elgato Wave:3 USB microphone as the always-working default input: pins its profile and priority in WirePlumber, re-defaults it when it reappears, and adds a bar icon with a controls popup for mic gain, mute, headphone volume and a live input level meter.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Wave:3",
-    "description": "Elgato Wave:3 mic status (present, default, muted) with a one-click reset",
+    "description": "Elgato Wave:3 mic status with a controls popup (gain, mute, headphone volume, level meter) and right-click reset",
     "category": "Media",
     "allowMultiple": false,
     "defaultSection": "right"
