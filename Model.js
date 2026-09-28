@@ -214,16 +214,22 @@ function isWave3SourceNode(node) {
   return true
 }
 
-// Finds the first Wave:3 input source node in an array or Pipewire.nodes collection.
-function findWave3Source(nodes) {
+// Finds the Wave:3 input source node in an array or Pipewire.nodes collection.
+// Prefers the node whose name === wanted, else the first prefix match.
+function findWave3Source(nodes, wanted) {
   if (!nodes) return null
   var list = (nodes.values && typeof nodes.values !== "function") ? nodes.values : nodes
   var len = list && typeof list.length === "number" ? list.length : 0
+  var fallback = null
+  var wantedStr = wanted ? String(wanted) : ""
   for (var i = 0; i < len; i++) {
     var n = list[i]
-    if (isWave3SourceNode(n)) return n
+    if (isWave3SourceNode(n)) {
+      if (wantedStr && n.name === wantedStr) return n
+      if (!fallback) fallback = n
+    }
   }
-  return null
+  return fallback
 }
 
 // pactl argv arrays by full name, or null when the name is missing or does

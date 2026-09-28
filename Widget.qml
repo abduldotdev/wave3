@@ -12,7 +12,7 @@ BarWidget {
   readonly property string hwScript: Qt.resolvedUrl("bin/wave3-hw").toString().replace(/^file:\/\//, "")
 
   readonly property var pwNodes: Pipewire.nodes ? Pipewire.nodes.values : []
-  readonly property var wave3SourceNode: Model.findWave3Source(root.pwNodes)
+  readonly property var wave3SourceNode: Model.findWave3Source(root.pwNodes, Model.sourceName(root.status))
 
   property var status: Model.parseStatus("")
   property var hwStatus: Model.parseHwStatus("")
@@ -264,7 +264,6 @@ BarWidget {
       if (!prevHold || p >= prevHold.value) {
         holdDecayTimer.restart()
       }
-      root.meterText = Model.formatPeakDb(p)
     }
     onEnabledChanged: {
       if (!enabled) {
@@ -274,6 +273,13 @@ BarWidget {
         holdDecayTimer.stop()
       }
     }
+  }
+
+  Timer {
+    interval: 150
+    repeat: true
+    running: peakMonitor.enabled
+    onTriggered: root.meterText = Model.formatPeakDb(peakMonitor.peak)
   }
 
   Timer {

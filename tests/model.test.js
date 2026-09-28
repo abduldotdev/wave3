@@ -208,6 +208,14 @@ test("isWave3SourceNode and findWave3Source match the Wave:3 source node", () =>
   assert.equal(Model.findWave3Source([sinkNode, otherNode]), null)
   assert.equal(Model.findWave3Source(null), null)
   assert.equal(Model.findWave3Source([]), null)
+
+  const wave3Node2 = { name: "alsa_input.usb-Elgato_Systems_Elgato_Wave_3_OTHER-00.mono-fallback", isSink: false, isStream: false }
+  // Prefers exact match on wanted
+  assert.equal(Model.findWave3Source([wave3Node, wave3Node2], wave3Node2.name), wave3Node2)
+  assert.equal(Model.findWave3Source([wave3Node, wave3Node2], wave3Node.name), wave3Node)
+  // Falls back to first matching node when wanted is unknown or omitted
+  assert.equal(Model.findWave3Source([wave3Node, wave3Node2], "unknown"), wave3Node)
+  assert.equal(Model.findWave3Source([wave3Node, wave3Node2]), wave3Node)
 })
 
 test("formatDb and meterPosition", () => {
