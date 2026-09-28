@@ -43,3 +43,16 @@ device node. Audio stays with `snd-usb-audio`.
 ```bash
 sudo install -m644 "$REPO/abduldotdev.wave3/udev/70-elgato-wave3.rules" /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
 ```
+
+## Updating to remembered settings
+
+No new link lines are needed for the settings store and restore. `wave3-watch` runs
+`bin/wave3-hw` from the plugin directory it is linked from, and the store is
+created at `~/.local/state/abduldotdev.wave3/hw.json` (by default) on the first
+saved change.
+The unit only changed its `Description=`. After pulling the update, reload and
+restart the watcher so it picks up the new script:
+
+```bash
+systemctl --user daemon-reload && systemctl --user restart wave3-watch
+```
