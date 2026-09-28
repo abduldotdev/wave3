@@ -1,0 +1,2 @@
+# Elgato Wave:3 vendor USB control access for logged-in desktop user (uaccess)
+SUBSYSTEM=="usb", ATTR{idVendor}=="0fd9", ATTR{idProduct}=="0070", TAG+="uaccess"

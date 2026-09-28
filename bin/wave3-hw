@@ -1,0 +1,549 @@
+#!/usr/bin/env python3
+# Wave:3 vendor USB control helper.
+# Standard library only.
+#
+# Protocol reference: https://github.com/KailasMahavarkar/elgato-wave3-ubuntu by Kailas Mahavarkar (MIT)
+# USB transport reference: wave3-probe.py
+
+import contextlib
+import ctypes
+import errno
+import fcntl
+import glob
+import os
+import struct
+import sys
+
+VENDOR_ID = "0fd9"
+PRODUCT_ID = "0070"
+
+RT_CLASS_IN = 0xA1
+RT_CLASS_OUT = 0x21
+BREQUEST_READ = 0x85
+BREQUEST_WRITE = 0x05
+WINDEX = 0x3303
+
+SEL_CONFIG = 0x0000
+SEL_STATUS = 0x0001
+SEL_VERSION = 0x000A
+
+CONFIG_LEN = 16
+
+
+class Ctrl(ctypes.Structure):
+    _fields_ = [
+        ("bRequestType", ctypes.c_uint8),
+        ("bRequest", ctypes.c_uint8),
+        ("wValue", ctypes.c_uint16),
+        ("wIndex", ctypes.c_uint16),
+        ("wLength", ctypes.c_uint16),
+        ("timeout", ctypes.c_uint32),
+        ("data", ctypes.c_void_p),
+    ]
+
+
+USBDEVFS_CONTROL = (3 << 30) | (ctypes.sizeof(Ctrl) << 16) | (ord("U") << 8) | 0
+
+
+FIELD_SPECS = {
+    "gain_db": {
+        "offset": 0,
+        "size": 2,
+        "type": "q88_db",
+        "min": 0.0,
+        "max": 40.0,
+        "step": 0.5,
+    },
+    "mute": {
+        "offset": 4,
+        "size": 1,
+        "type": "bool",
+    },
+    "clipguard": {
+        "offset": 5,
+        "size": 1,
+        "type": "bool",
+    },
+    "lowcut": {
+        "offset": 6,
+        "size": 1,
+        "type": "bool",
+    },
+    "hp_db": {
+        "offset": 7,
+        "size": 2,
+        "type": "q88_db",
+        "min": -60.0,
+        "max": 0.0,
+        "step": 0.5,
+    },
+    "hp_mute": {
+        "offset": 9,
+        "size": 1,
+        "type": "bool",
+    },
+    "direct_monitor": {
+        "offset": 10,
+        "size": 2,
+        "type": "q88_pct",
+        "min": 0.0,
+        "max": 100.0,
+        "step": 5.0,
+    },
+    "volume_select": {
+        "offset": 12,
+        "size": 1,
+        "type": "enum",
+        "values": {
+            "1": 1,
+            "2": 2,
+            "3": 3,
+            "mic": 1,
+            "headphone": 2,
+            "mix": 3,
+        },
+    },
+    "leds_off": {
+        "offset": 13,
+        "size": 1,
+        "type": "bool",
+    },
+    "leds_flip": {
+        "offset": 14,
+        "size": 1,
+        "type": "bool",
+    },
+    "gain_lock": {
+        "offset": 15,
+        "size": 1,
+        "type": "bool",
+    },
+}
+
+STATUS_FIELDS = [
+    "gain_db",
+    "mute",
+    "clipguard",
+    "lowcut",
+    "hp_db",
+    "hp_mute",
+    "direct_monitor",
+    "volume_select",
+    "leds_off",
+    "leds_flip",
+    "gain_lock",
+]
+
+
+class DeviceAbsent(Exception):
+    pass
+
+
+class PermissionDenied(Exception):
+    pass
+
+
+class UnsupportedApiVersion(Exception):
+    def __init__(self, api_str):
+        self.api_str = api_str
+        super().__init__(f"unsupported API version {api_str}")
+
+
+class ReadBackMismatch(Exception):
+    pass
+
+
+def get_udev_hint():
+    script_path = os.path.realpath(__file__)
+    plugin_dir = os.path.dirname(os.path.dirname(script_path))
+    rule_path = os.path.join(plugin_dir, "udev", "70-elgato-wave3.rules")
+    return (
+        f"permission denied accessing device; to grant access install the udev rule:\n"
+        f"  sudo install -m644 {rule_path} /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger"
+    )
+
+
+def decode_field(name, buf):
+    spec = FIELD_SPECS[name]
+    offset = spec["offset"]
+    t = spec["type"]
+    if t == "bool":
+        return buf[offset] & 1
+    elif t == "enum":
+        return buf[offset]
+    elif t == "q88_db":
+        raw = struct.unpack_from("<h", buf, offset)[0]
+        return raw / 256.0
+    elif t == "q88_pct":
+        raw = struct.unpack_from("<h", buf, offset)[0]
+        return int(round(raw / 256.0))
+    raise ValueError(f"Unknown type: {t}")
+
+
+def format_field(name, val):
+    spec = FIELD_SPECS[name]
+    t = spec["type"]
+    if t == "q88_db":
+        return f"{val:.1f}"
+    elif t == "q88_pct":
+        return f"{int(val)}"
+    elif t == "bool":
+        return f"{int(val)}"
+    elif t == "enum":
+        return f"{int(val)}"
+    return str(val)
+
+
+def parse_field_value(name, val_str):
+    if name not in FIELD_SPECS:
+        raise ValueError(f"unknown field '{name}'")
+    spec = FIELD_SPECS[name]
+    t = spec["type"]
+    if t == "bool":
+        s = val_str.strip().lower()
+        if s in ("1", "on", "yes", "true"):
+            return 1
+        elif s in ("0", "off", "no", "false"):
+            return 0
+        else:
+            raise ValueError(f"bad boolean value '{val_str}' for field '{name}'")
+    elif t == "enum":
+        s = val_str.strip().lower()
+        if s in spec["values"]:
+            return spec["values"][s]
+        raise ValueError(f"bad enum value '{val_str}' for field '{name}'")
+    elif t == "q88_db":
+        try:
+            v = float(val_str)
+        except ValueError:
+            raise ValueError(f"bad float value '{val_str}' for field '{name}'")
+        clamped = max(spec["min"], min(spec["max"], v))
+        quantized = round(clamped / spec["step"]) * spec["step"]
+        quantized = max(spec["min"], min(spec["max"], quantized))
+        return quantized
+    elif t == "q88_pct":
+        try:
+            v = float(val_str)
+        except ValueError:
+            raise ValueError(f"bad number value '{val_str}' for field '{name}'")
+        clamped = max(spec["min"], min(spec["max"], v))
+        quantized = int(round(clamped / spec["step"]) * spec["step"])
+        quantized = max(int(spec["min"]), min(int(spec["max"]), quantized))
+        return quantized
+    raise ValueError(f"unknown field '{name}'")
+
+
+def encode_field(name, val, buf):
+    spec = FIELD_SPECS[name]
+    offset = spec["offset"]
+    t = spec["type"]
+    out = bytearray(buf)
+    if t == "bool":
+        out[offset] = 1 if val else 0
+    elif t == "enum":
+        out[offset] = int(val) & 0xFF
+    elif t in ("q88_db", "q88_pct"):
+        raw_int = int(round(val * 256.0))
+        struct.pack_into("<h", out, offset, raw_int)
+    return bytes(out)
+
+
+class FakeTransport:
+    def __init__(self, fake_dir):
+        self.fake_dir = fake_dir
+        self.device_str = f"fake:{fake_dir}"
+
+    def check_presence_and_access(self):
+        if not os.path.isdir(self.fake_dir):
+            raise DeviceAbsent(f"Fake directory '{self.fake_dir}' not found")
+        if os.path.exists(os.path.join(self.fake_dir, "denied")):
+            raise PermissionDenied(f"Access denied in fake '{self.fake_dir}'")
+
+    def get_version(self):
+        self.check_presence_and_access()
+        version_file = os.path.join(self.fake_dir, "version")
+        if os.path.exists(version_file):
+            try:
+                with open(version_file, "r") as f:
+                    content = f.read().strip()
+                if content:
+                    parts = content.split(".")
+                    return int(parts[0]), int(parts[1]), content
+            except Exception:
+                pass
+        return 5, 3, "5.3"
+
+    def read_config(self):
+        self.check_presence_and_access()
+        config_file = os.path.join(self.fake_dir, "config")
+        if not os.path.exists(config_file):
+            raise DeviceAbsent(f"Config file not found in fake dir: {config_file}")
+        with open(config_file, "r") as f:
+            content = f.read().strip()
+        data = bytes.fromhex(content)
+        if len(data) != CONFIG_LEN:
+            raise ValueError(f"Config block in {config_file} must be {CONFIG_LEN} bytes, got {len(data)}")
+        return data
+
+    def write_config(self, block):
+        self.check_presence_and_access()
+        if len(block) != CONFIG_LEN:
+            raise ValueError(f"Config block must be {CONFIG_LEN} bytes")
+        if os.path.exists(os.path.join(self.fake_dir, "readonly")):
+            # Silently drop writes per specification
+            return
+        config_file = os.path.join(self.fake_dir, "config")
+        hex_str = " ".join(f"{b:02x}" for b in block) + "\n"
+        with open(config_file, "w") as f:
+            f.write(hex_str)
+
+
+class UsbTransport:
+    def __init__(self):
+        self.device_path = None
+        self._find_device()
+
+    def _find_device(self):
+        for d in glob.glob("/sys/bus/usb/devices/*"):
+            try:
+                with open(os.path.join(d, "idVendor"), "r") as f:
+                    v = f.read().strip()
+                with open(os.path.join(d, "idProduct"), "r") as f:
+                    p = f.read().strip()
+            except OSError:
+                continue
+            if (v.lower(), p.lower()) == (VENDOR_ID.lower(), PRODUCT_ID.lower()):
+                try:
+                    with open(os.path.join(d, "busnum"), "r") as f:
+                        bus = int(f.read().strip())
+                    with open(os.path.join(d, "devnum"), "r") as f:
+                        dev = int(f.read().strip())
+                    self.device_path = f"/dev/bus/usb/{bus:03d}/{dev:03d}"
+                    return
+                except OSError:
+                    continue
+        self.device_path = None
+
+    @property
+    def device_str(self):
+        return self.device_path or ""
+
+    def _open(self):
+        if not self.device_path or not os.path.exists(self.device_path):
+            raise DeviceAbsent("Elgato Wave:3 USB device not found")
+        try:
+            return os.open(self.device_path, os.O_RDWR)
+        except OSError as e:
+            if e.errno in (errno.EACCES, errno.EPERM):
+                raise PermissionDenied(f"Permission denied: {self.device_path}")
+            elif e.errno == errno.ENOENT:
+                raise DeviceAbsent(f"Device node missing: {self.device_path}")
+            raise
+
+    def check_presence_and_access(self):
+        if not self.device_path or not os.path.exists(self.device_path):
+            raise DeviceAbsent("Elgato Wave:3 USB device not found")
+        fd = self._open()
+        os.close(fd)
+
+    def _read_control(self, fd, wvalue, length):
+        buf = ctypes.create_string_buffer(length)
+        c = Ctrl(RT_CLASS_IN, BREQUEST_READ, wvalue, WINDEX, length, 1000, ctypes.cast(buf, ctypes.c_void_p))
+        got = fcntl.ioctl(fd, USBDEVFS_CONTROL, c)
+        return buf.raw[:got]
+
+    def _write_control(self, fd, wvalue, data):
+        buf = ctypes.create_string_buffer(bytes(data), len(data))
+        c = Ctrl(RT_CLASS_OUT, BREQUEST_WRITE, wvalue, WINDEX, len(data), 1000, ctypes.cast(buf, ctypes.c_void_p))
+        return fcntl.ioctl(fd, USBDEVFS_CONTROL, c)
+
+    def get_version(self):
+        fd = self._open()
+        try:
+            raw = self._read_control(fd, SEL_VERSION, 2)
+            if len(raw) < 2:
+                raise ValueError("Failed to read version block from USB device")
+            major, minor = raw[0], raw[1]
+            return major, minor, f"{major}.{minor}"
+        finally:
+            os.close(fd)
+
+    def read_config(self):
+        fd = self._open()
+        try:
+            raw = self._read_control(fd, SEL_CONFIG, CONFIG_LEN)
+            if len(raw) != CONFIG_LEN:
+                raise ValueError(f"Expected {CONFIG_LEN} config bytes from USB device, got {len(raw)}")
+            return raw
+        finally:
+            os.close(fd)
+
+    def write_config(self, block):
+        if len(block) != CONFIG_LEN:
+            raise ValueError(f"Config block must be {CONFIG_LEN} bytes")
+        fd = self._open()
+        try:
+            self._write_control(fd, SEL_CONFIG, block)
+        finally:
+            os.close(fd)
+
+
+def get_transport():
+    fake = os.environ.get("WAVE3_HW_FAKE")
+    if fake is not None:
+        return FakeTransport(fake)
+    return UsbTransport()
+
+
+@contextlib.contextmanager
+def file_lock():
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime_dir or not os.path.isdir(runtime_dir):
+        runtime_dir = "/tmp"
+    lock_path = os.path.join(runtime_dir, "wave3-hw.lock")
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
+
+
+def cmd_status(transport):
+    try:
+        try:
+            transport.check_presence_and_access()
+        except DeviceAbsent:
+            print("present=no")
+            print("access=")
+            print("device=")
+            print("api=")
+            print("supported=no")
+            return 0
+        except PermissionDenied:
+            print("present=yes")
+            print("access=denied")
+            print(f"device={transport.device_str}")
+            print("api=")
+            print("supported=no")
+            return 0
+
+        major, minor, api_str = transport.get_version()
+        supported = "yes" if (major, minor) in ((5, 3), (5, 4)) else "no"
+        config = transport.read_config()
+
+        print("present=yes")
+        print("access=ok")
+        print(f"device={transport.device_str}")
+        print(f"api={api_str}")
+        print(f"supported={supported}")
+
+        for name in STATUS_FIELDS:
+            val = decode_field(name, config)
+            print(f"{name}={format_field(name, val)}")
+        raw_hex = " ".join(f"{b:02x}" for b in config)
+        print(f"raw={raw_hex}")
+        return 0
+    except Exception as e:
+        print(f"error={e}")
+        return 0
+
+
+def cmd_set(transport, field, value_str):
+    if field not in FIELD_SPECS:
+        sys.stderr.write(f"wave3-hw: unknown field '{field}'\n")
+        return 2
+
+    try:
+        parsed_val = parse_field_value(field, value_str)
+    except ValueError as e:
+        sys.stderr.write(f"wave3-hw: {e}\n")
+        return 2
+
+    with file_lock():
+        try:
+            transport.check_presence_and_access()
+        except DeviceAbsent:
+            sys.stderr.write("wave3-hw: device absent\n")
+            return 3
+        except PermissionDenied:
+            sys.stderr.write(f"wave3-hw: {get_udev_hint()}\n")
+            return 4
+
+        try:
+            major, minor, api_str = transport.get_version()
+        except Exception as e:
+            sys.stderr.write(f"wave3-hw: failed to get device version: {e}\n")
+            return 1
+
+        if (major, minor) not in ((5, 3), (5, 4)):
+            sys.stderr.write(f"wave3-hw: unsupported API version {api_str}\n")
+            return 5
+
+        try:
+            old_config = transport.read_config()
+        except Exception as e:
+            sys.stderr.write(f"wave3-hw: failed to read config: {e}\n")
+            return 1
+
+        new_config = encode_field(field, parsed_val, old_config)
+
+        try:
+            transport.write_config(new_config)
+        except Exception as e:
+            sys.stderr.write(f"wave3-hw: failed to write config: {e}\n")
+            return 1
+
+        try:
+            read_back = transport.read_config()
+        except Exception as e:
+            sys.stderr.write(f"wave3-hw: failed to read back config: {e}\n")
+            return 1
+
+        spec = FIELD_SPECS[field]
+        offset = spec["offset"]
+        size = spec["size"]
+        if read_back[offset : offset + size] != new_config[offset : offset + size]:
+            sys.stderr.write(f"wave3-hw: read-back verification failed for field '{field}'\n")
+            return 6
+
+        stored_val = decode_field(field, read_back)
+        print(f"{field}={format_field(field, stored_val)}")
+        return 0
+
+
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+
+    if not argv:
+        sys.stderr.write("wave3-hw: usage: wave3-hw status | wave3-hw set <field> <value>\n")
+        return 2
+
+    cmd = argv[0]
+    transport = get_transport()
+
+    if cmd == "status":
+        return cmd_status(transport)
+    elif cmd == "set":
+        if len(argv) != 3:
+            sys.stderr.write("wave3-hw: usage: wave3-hw set <field> <value>\n")
+            return 2
+        field = argv[1]
+        value_str = argv[2]
+        return cmd_set(transport, field, value_str)
+    else:
+        sys.stderr.write(f"wave3-hw: unknown command '{cmd}'\n")
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
