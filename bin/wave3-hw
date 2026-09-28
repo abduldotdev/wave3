@@ -616,6 +616,8 @@ def classify_error(e):
         return 6, "mismatch", str(e)
     if isinstance(e, DeviceBusy):
         return 8, "busy", str(e)
+    if isinstance(e, StoreCorrupt):
+        return 7, "error", f"store: {e}"
     return 1, "error", str(e)
 
 
@@ -747,14 +749,23 @@ def parse_apply_args(args):
     return settle, retries
 
 
-def apply_attempt(transport, fields, written):
+def apply_attempt(transport, written):
     """One locked read-modify-write of the stored fields that differ.
 
-    Bytes outside the stored fields (reserved 2-3, mute 4, volume_select 12)
-    are copied from the block just read. Fields written are appended to
-    'written' before the write so a failed read-back still reports them.
+    The store is re-read under the lock each attempt, so a set or forget
+    that lands during a settle sleep is honoured, not reverted. A missing
+    or empty store writes nothing. Bytes outside the stored fields
+    (reserved 2-3, mute 4, volume_select 12) are copied from the block just
+    read. Fields written are appended to 'written' before the write so a
+    failed read-back still reports them.
     """
     with file_lock():
+        try:
+            fields = load_store(store_path())
+        except OSError as e:
+            raise StoreCorrupt(str(e))
+        if not fields:
+            return
         config = read_block(transport)
         new_config = config
         differing = []
@@ -804,7 +815,7 @@ def cmd_apply(transport, args):
             time.sleep(settle)
         written = changed if attempt == 0 else reapplied
         try:
-            apply_attempt(transport, fields, written)
+            apply_attempt(transport, written)
             failure = None
         except Exception as e:
             failure = e
@@ -813,7 +824,7 @@ def cmd_apply(transport, args):
             if result not in ("absent", "denied", "busy", "mismatch"):
                 break
 
-    print("store=ok")
+    print("store=corrupt" if isinstance(failure, StoreCorrupt) else "store=ok")
     print(f"changed={','.join(n for n in STATUS_FIELDS if n in changed)}")
     print(f"reapplied={','.join(n for n in STATUS_FIELDS if n in reapplied)}")
     if failure is not None:
@@ -830,6 +841,7 @@ def cmd_save(transport):
             config = read_block(transport)
             fields = {n: canonical_value(n, decode_field(n, config)) for n in STORED_FIELDS}
             try:
+                load_store_for_update(store_path())
                 write_store(store_path(), fields)
             except Exception as e:
                 sys.stderr.write(f"wave3-hw: could not save setting: {e}\n")

@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -631,6 +632,73 @@ exec "$REAL_BIN" "$@"
         self.assertEqual(self.read_config_hex(), "00 0a 00 ec 00 01 01 80 eb 00 00 00 02 00 00 01")
         self.assertEqual(self.count_writes(), 2)
 
+    def run_apply_with_midsettle(self, action):
+        """Start 'apply --settle 1 --retries 1', run action() after its first write, and wait."""
+        proc = subprocess.Popen(
+            [BIN_WAVE3_HW, "apply", "--settle", "1", "--retries", "1"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env,
+        )
+        deadline = time.monotonic() + 5
+        while self.count_writes() < 1 and proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(self.count_writes(), 1)
+        action()
+        stdout, stderr = proc.communicate(timeout=10)
+        return proc.returncode, stdout, stderr
+
+    def test_apply_settle_honours_set_between_rounds(self):
+        """A set during the settle sleep is not reverted by the next round."""
+        self.write_fake("config", POWER_ON_HEX + "\n")
+        self.write_store(PRE_REPLUG_STORE)
+
+        def set_lowcut():
+            res = self.run_hw("set", "lowcut", "0")
+            self.assertEqual(res.stdout.splitlines(), ["lowcut=0", "saved=yes"])
+
+        rc, stdout, stderr = self.run_apply_with_midsettle(set_lowcut)
+        self.assertEqual(rc, 0, stderr)
+        self.assertEqual(
+            stdout.splitlines(),
+            ["store=ok", "changed=gain_db,lowcut,gain_lock", "reapplied=", "result=applied"],
+        )
+        self.assertEqual(self.read_config_hex(), "00 0a 00 ec 00 01 00 80 eb 00 00 00 02 00 00 01")
+        self.assertEqual(self.read_store()["fields"]["lowcut"], 0)
+        self.assertEqual(self.count_writes(), 2)
+
+    def test_apply_settle_honours_forget_between_rounds(self):
+        """After forget during the settle sleep, a later round writes nothing."""
+        self.write_fake("config", POWER_ON_HEX + "\n")
+        self.write_fake("drift", "00 28 00 ec 00 01 01 80 eb 00 00 00 02 00 00 01\n")
+        self.write_store(PRE_REPLUG_STORE)
+
+        rc, stdout, stderr = self.run_apply_with_midsettle(lambda: self.run_hw("forget"))
+        self.assertEqual(rc, 0, stderr)
+        self.assertEqual(
+            stdout.splitlines(),
+            ["store=ok", "changed=gain_db,lowcut,gain_lock", "reapplied=", "result=applied"],
+        )
+        self.assertEqual(self.read_config_hex(), "00 0a 00 ec 00 01 01 80 eb 00 00 00 02 00 00 01")
+        self.assertEqual(self.count_writes(), 1)
+
+    def test_apply_settle_store_corrupted_between_rounds(self):
+        """A store corrupted during the settle sleep stops apply with exit 7 and no write."""
+        self.write_fake("config", POWER_ON_HEX + "\n")
+        self.write_fake("drift", "00 28 00 ec 00 01 01 80 eb 00 00 00 02 00 00 01\n")
+        self.write_store(PRE_REPLUG_STORE)
+
+        def corrupt():
+            with open(self.store_path, "w") as f:
+                f.write("{")
+
+        rc, stdout, stderr = self.run_apply_with_midsettle(corrupt)
+        self.assertEqual(rc, 7)
+        self.assertEqual(
+            stdout.splitlines(),
+            ["store=corrupt", "changed=gain_db,lowcut,gain_lock", "reapplied=", "result=error"],
+        )
+        self.assertIn("wave3-hw: apply attempt 1: store:", stderr)
+        self.assertEqual(self.count_writes(), 1)
+
     def test_apply_bad_flags_exit_2(self):
         """Out of range or unparsable apply flags exit 2."""
         for args in (("--settle", "-1"), ("--settle", "31"), ("--retries", "11"), ("--settle", "x"),
@@ -690,6 +758,16 @@ exec "$REAL_BIN" "$@"
         res = self.run_hw("set", "clipguard", "0")
         self.assertEqual(res.stdout.splitlines(), ["clipguard=0", "saved=yes"])
         self.assertEqual(self.read_store(), {"version": 1, "fields": {"clipguard": 0}})
+
+    def test_save_replaces_corrupt_store(self):
+        """save over a corrupt store replaces it and says so on stderr."""
+        os.makedirs(os.path.dirname(self.store_path))
+        with open(self.store_path, "w") as f:
+            f.write("{")
+        res = self.run_hw("save")
+        self.assertEqual(res.stdout.splitlines()[-1], "saved=yes")
+        self.assertIn(f"wave3-hw: store: replacing corrupt store {self.store_path}: ", res.stderr)
+        self.assertEqual(self.read_store(), {"version": 1, "fields": PRE_REPLUG_STORE})
 
     # T-6
     def test_save_and_forget(self):
