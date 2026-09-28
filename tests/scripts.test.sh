@@ -1,6 +1,6 @@
 #!/bin/bash
-# Exercises bin/wave3-reset, bin/wave3-meter and bin/wave3-watch against stub
-# pactl and parec binaries on PATH. Never touches the real audio server.
+# Exercises bin/wave3-reset and bin/wave3-watch against stub
+# pactl binary on PATH. Never touches the real audio server.
 # WAVE3_HW is a no-op stub so no watcher run executes the real wave3-hw.
 set -euo pipefail
 
@@ -85,22 +85,6 @@ esac
 exit 0
 STUB
 chmod +x "$TMP/bin/pactl"
-# Three 800-sample chunks: silence, +32767, and -32768 (clamped to 32767).
-# $STUB/parec-forever loops a chunk instead, so a signal test can catch it.
-cat > "$TMP/bin/parec" <<'STUB'
-#!/bin/bash
-echo "parec $*" >> "$STUB/parec.log"
-if [ -f "$STUB/parec-forever" ]; then
-  while true; do
-    dd if=/dev/zero bs=1600 count=1 status=none
-    sleep 0.05
-  done
-fi
-dd if=/dev/zero bs=1600 count=1 status=none
-printf '\377\177%.0s' $(seq 1 800)
-printf '\000\200%.0s' $(seq 1 800)
-STUB
-chmod +x "$TMP/bin/parec"
 export PATH="$TMP/bin:$PATH" OTHER STUB="$TMP/state" WAVE3_WAIT_TRIES=2
 
 fails=0
@@ -260,105 +244,6 @@ echo 40 > "$STUB/sink_volume"
 echo 51 > "$STUB/sink_volume_r"
 out="$("$ROOT/bin/wave3-reset" --status)"
 check "unequal channels: sink_volume rounds 40/51 to 46" 'printf "%s\n" "$out" | grep -qx "sink_volume=46"'
-
-# --- meter ---
-fresh yes
-set +e; out="$("$ROOT/bin/wave3-meter" 2>"$TMP/meter.err")"; rc=$?; set -e
-check "meter: peaks are 0, 32767, 32767" '[ "$out" = "$(printf "0\n32767\n32767")" ]'
-check "meter: parec ending exits 1" '[ "$rc" -eq 1 ]'
-log="$(cat "$STUB/parec.log")"
-check "meter: parec -d is the real source, not a monitor" '[ "${log##*-d }" = "$SRC" ] && [[ "$log" != *".monitor"* && "$log" == *"Wave:3 level meter"* ]]'
-
-fresh no
-echo "$CARD" > "$STUB/card"
-check "meter: monitor source is still listed" 'pactl list short sources | grep -q "\.monitor"'
-set +e; err="$("$ROOT/bin/wave3-meter" 2>&1 >/dev/null)"; rc=$?; set -e
-check "meter: missing mic exits 1" '[ "$rc" -eq 1 ] && [[ "$err" == "wave3-meter: Elgato Wave:3 input source not found" ]]'
-check "meter: missing mic never starts parec" '[ ! -e "$STUB/parec.log" ]'
-
-fresh yes; touch "$STUB/down"
-set +e; err="$("$ROOT/bin/wave3-meter" 2>&1 >/dev/null)"; rc=$?; set -e
-check "meter: server down exits 1" '[ "$rc" -eq 1 ] && [[ "$err" == "wave3-meter: cannot reach the audio server (pactl failed)" ]]'
-check "meter: server down never starts parec" '[ ! -e "$STUB/parec.log" ]'
-
-set +e; err="$("$ROOT/bin/wave3-meter" --bogus 2>&1 >/dev/null)"; rc=$?; set -e
-check "meter: unknown option exits 2" '[ "$rc" -eq 2 ] && [[ "$err" == "wave3-meter: unknown option: --bogus" ]]'
-
-fresh yes; touch "$STUB/parec-forever"
-"$ROOT/bin/wave3-meter" >/dev/null 2>"$TMP/meter.err" &
-mpid=$!
-started=0
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  if pgrep -f "$TMP/bin/parec" >/dev/null; then started=1; break; fi
-  sleep 0.05
-done
-check "meter: forever mode starts parec" '[ "$started" -eq 1 ]'
-kill -TERM "$mpid"
-set +e
-exited=0
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  if ! kill -0 "$mpid" 2>/dev/null; then exited=1; break; fi
-  sleep 0.1
-done
-if [ "$exited" -eq 1 ]; then
-  wait "$mpid"
-  rc=$?
-else
-  kill -KILL "$mpid" 2>/dev/null || true
-  wait "$mpid" 2>/dev/null || true
-  rc=99
-fi
-set -e
-check "meter: TERM exits 0" '[ "$rc" -eq 0 ]'
-gone=0
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  if ! pgrep -f "$TMP/bin/parec" >/dev/null; then gone=1; break; fi
-  sleep 0.1
-done
-check "meter: TERM stops parec within 1s" '[ "$gone" -eq 1 ]'
-
-# Every process under a pid, for checking that a signal leaves none behind.
-descendants() {
-  local kid
-  for kid in $(pgrep -P "$1"); do echo "$kid"; descendants "$kid"; done
-}
-
-# meter_signal <TERM|INT>: once the pipeline runs, the signal must leave no
-# parec, od, awk or subshell behind. env resets SIGINT, which a background job
-# of this script would otherwise inherit as ignored, as quickshell does not.
-meter_signal() {
-  local mpid kids alive
-  fresh yes; touch "$STUB/parec-forever"
-  env --default-signal=INT "$ROOT/bin/wave3-meter" >/dev/null 2>"$TMP/meter.err" &
-  mpid=$!
-  for _ in $(seq 1 20); do
-    pgrep -f "$TMP/bin/parec" >/dev/null && break
-    sleep 0.05
-  done
-  sleep 0.1
-  kids="$(descendants "$mpid")"
-  kill "-$1" "$mpid"
-  set +e; wait "$mpid"; set -e
-  sleep 0.3
-  alive=""
-  for k in $kids; do kill -0 "$k" 2>/dev/null && alive="$alive $k"; done
-  check "meter: $1 leaves no child process ($(echo $kids | wc -w) tracked)" '[ -n "$kids" ] && [ -z "$alive" ]'
-  check "meter: $1 is silent on stderr" '[ ! -s "$TMP/meter.err" ]'
-}
-meter_signal TERM
-meter_signal INT
-
-# A signal right after start, before the pipeline is up, leaves nothing either.
-fresh yes; touch "$STUB/parec-forever"
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  "$ROOT/bin/wave3-meter" >/dev/null 2>&1 &
-  mpid=$!
-  sleep "0.0$((RANDOM % 5))"
-  kill -TERM "$mpid"
-  set +e; wait "$mpid"; set -e
-done
-sleep 0.3
-check "meter: early TERM never strands parec" '! pgrep -f "$TMP/bin/parec" >/dev/null'
 
 # --- watcher ---
 cat > "$TMP/fake-reset" <<'EOF'

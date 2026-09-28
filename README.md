@@ -40,7 +40,7 @@ This plugin fixes the first with priorities and a watcher, avoids the second by 
   - `wave3-hw forget`: deletes the store. Prints `forgotten=yes`, or `forgotten=no` when there was none. It does not open the device, so it works with the mic unplugged.
   - Exit codes: `0` ok, `2` usage / bad field / bad value, `3` device absent, `4` permission denied (stderr names the udev command below), `5` unsupported API version, `6` read-back mismatch, `7` settings store corrupt (`apply` only), `8` device busy (lock wait over 2 s, or `EBUSY`/`EAGAIN` retries exhausted), `1` anything else. Every command, `status` and `forget` included, takes the same lock at `$XDG_RUNTIME_DIR/wave3-hw.lock`. The message is `wave3-hw: <text>` on stderr.
   - Tests set `WAVE3_HW_FAKE=<dir>` and never open a USB device. A missing directory means absent; `<dir>/denied` means permission denied; `<dir>/version` is the API text (`5.3` when the file is missing); `<dir>/config` is 16 hex bytes separated by spaces. `<dir>/readonly` drops writes so a read-back mismatch can be tested. `<dir>/busy` holds a count of operations that fail with `EBUSY`; `<dir>/drift` replaces `config` on the second read after the first write (a late OS volume write); each write appends a line to `<dir>/writes`. `device=` then prints `fake:<dir>`.
-- **`wave3-meter`**: prints the mic's peak level (`0`–`32767`) once per 100 ms from a `parec` capture stream named `Wave:3 level meter`. It finds the mic by name and never records a `.monitor` source. The widget runs it only while the popup is open and the mic is present.
+- **Level meter**: native PipeWire peak monitor (`PwNodePeakMonitor`) tracking the Wave:3 input node directly. It runs only while the popup is open and the mic is present, providing a smooth hardware-rate dBFS level meter with a 1.5 s peak hold.
 - **`wave3-watch` service**: listens to `pactl subscribe` and runs `wave3-reset --ensure-default` once at start and whenever a source or card is added. It only reacts to `new` events, so the `change` events from setting the default never retrigger it.
   - At the same moments it runs `wave3-hw apply --settle 2.5 --retries 2` in the background, from its own directory (or `$WAVE3_HW`). That is an immediate apply plus checks at about +2.5 s and +5 s, which put the settings back if the ALSA/WirePlumber volume restore lands after the card appears. After the last check, later OS volume changes are left alone.
   - A new apply is skipped while one is still running, or within `WAVE3_APPLY_INTERVAL` seconds (default 5, `0` turns off only this window) of the previous one's start. Skipped events are dropped, not queued; the running apply's later checks cover the burst of events one replug produces.
@@ -74,7 +74,7 @@ This plugin fixes the first with priorities and a watcher, avoids the second by 
 
 **Gain lock:** while gain lock is on, the firmware ignores OS volume changes, which is why the old popup slider (PipeWire source volume) did nothing to the real gain. The knob and `wave3-hw set gain_db` still change it. Turn gain lock off when an app should control the level. The level meter measures the recorded signal, after gain.
 
-While the popup is open the meter's capture stream shows in `pactl list source-outputs` as `Wave:3 level meter`, and it may light a "microphone in use" indicator. It stops within a second of closing the popup.
+While the popup is open the meter monitors the Wave:3 input node directly via PipeWire. It stops immediately when the popup closes or is hidden.
 
 ## Remembered settings
 
@@ -95,22 +95,21 @@ Pick the Wave:3 as EasyEffects' input, then select `easyeffects_source` as the d
 
 | Path | Installed to | Purpose |
 |---|---|---|
-| `manifest.json`, `Widget.qml`, `Model.js` | `~/.config/omarchy/plugins/abduldotdev.wave3` | Bar widget; `Model.js` parses `--status`, `wave3-hw status` and meter output |
+| `manifest.json`, `Widget.qml`, `Model.js` | `~/.config/omarchy/plugins/abduldotdev.wave3` | Bar widget; `Model.js` parses `--status`, `wave3-hw status` and pactl commands |
 | `Wave3Popup.qml` | `~/.config/omarchy/plugins/abduldotdev.wave3` | Controls popup |
 | `wireplumber/51-elgato-wave3.conf` | `~/.config/wireplumber/wireplumber.conf.d/` | Profile, priority and suspend rules |
 | `bin/wave3-reset` | `~/.local/bin/` | Reset / default / status script |
 | `bin/wave3-watch` | `~/.local/bin/` | Event watcher run by the service |
-| `bin/wave3-meter` | plugin directory only | Level meter the popup runs |
 | `bin/wave3-hw` | plugin directory; optional `~/.local/bin/` | Vendor control CLI (`status` / `set` / `apply` / `save` / `forget`) |
 | `udev/70-elgato-wave3.rules` | `/etc/udev/rules.d/` (manual, sudo) | Seat-user access to the USB device node |
 | `systemd/wave3-watch.service` | `~/.config/systemd/user/` | Runs the watcher for the user session |
 | (created at runtime) | `~/.local/state/abduldotdev.wave3/hw.json` | Remembered hardware settings, written by `wave3-hw set` / `save` |
 
-The scripts find their siblings through `readlink -f`, so they work when symlinked. The widget runs the plugin's own `bin/wave3-reset`, `bin/wave3-hw` and `bin/wave3-meter` and does not need the `~/.local/bin` links.
+The scripts find their siblings through `readlink -f`, so they work when symlinked. The widget runs the plugin's own `bin/wave3-reset` and `bin/wave3-hw` and does not need the `~/.local/bin` links.
 
 ## Prerequisites
 
-`pactl` and `parec` (from `libpulse`), `od` and `awk`, `python3` (for `wave3-hw`), and WirePlumber 0.5, all present on Omarchy by default. Nothing else is installed.
+`pactl` (from `libpulse`), `awk`, `python3` (for `wave3-hw`), and WirePlumber 0.5, all present on Omarchy by default. Nothing else is installed.
 
 ## Installation
 
@@ -203,11 +202,11 @@ Also remove the wave3 lines from `link.sh`, or it will recreate the links. The o
 
 ## Testing
 
-The node and shell suites use fixtures or a stub `pactl`/`parec` on `PATH` and never touch the real audio server. The Python suite uses `WAVE3_HW_FAKE` and never opens a USB device, and sets `WAVE3_HW_STORE` to a temporary file so it never touches your settings store:
+The node and shell suites use fixtures or a stub `pactl` on `PATH` and never touch the real audio server. The Python suite uses `WAVE3_HW_FAKE` and never opens a USB device, and sets `WAVE3_HW_STORE` to a temporary file so it never touches your settings store:
 
 ```bash
 node --test tests/          # Model.js parsing and pactl command building
-bash tests/scripts.test.sh  # wave3-reset, wave3-watch and wave3-meter against stubs
+bash tests/scripts.test.sh  # wave3-reset and wave3-watch against stubs
 python3 -m unittest discover -s tests -p 'test_*.py'  # wave3-hw
 ```
 

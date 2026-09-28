@@ -676,6 +676,8 @@ PopupWindow {
               radius: parent.radius
               width: parent.width * Model.meterPosition((root.status.muted || (root.hwReady && root.hwStatus.mute)) ? 0 : root.level)
               color: root.level >= 0.99 ? root.urgent : root.accent
+
+              Behavior on width { NumberAnimation { duration: 70 } }
             }
 
             Rectangle {
@@ -684,6 +686,8 @@ PopupWindow {
               height: parent.height
               x: Math.max(0, parent.width * Model.meterPosition(root.holdLevel) - width)
               color: root.holdLevel >= 0.99 ? root.urgent : root.fg
+
+              Behavior on x { NumberAnimation { duration: 70 } }
             }
           }
         }

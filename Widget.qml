@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell.Io
+import Quickshell.Services.Pipewire
 import qs.Ui
 import "Model.js" as Model
 
@@ -8,8 +9,10 @@ BarWidget {
 
   // Run the plugin's own copy so the widget works without ~/.local/bin links.
   readonly property string resetScript: Qt.resolvedUrl("bin/wave3-reset").toString().replace(/^file:\/\//, "")
-  readonly property string meterScript: Qt.resolvedUrl("bin/wave3-meter").toString().replace(/^file:\/\//, "")
   readonly property string hwScript: Qt.resolvedUrl("bin/wave3-hw").toString().replace(/^file:\/\//, "")
+
+  readonly property var pwNodes: Pipewire.nodes ? Pipewire.nodes.values : []
+  readonly property var wave3SourceNode: Model.findWave3Source(root.pwNodes)
 
   property var status: Model.parseStatus("")
   property var hwStatus: Model.parseHwStatus("")
@@ -30,7 +33,7 @@ BarWidget {
   property var pendingHwSets: ({})
 
   // Meter state, only meaningful while the popup is open.
-  property bool meterAvailable: true
+  readonly property bool meterAvailable: !root.status.present || Boolean(root.wave3SourceNode)
   property real meterLevel: 0
   property var meterHold: null
   property string meterText: Model.formatDb(-Infinity)
@@ -77,7 +80,6 @@ BarWidget {
   function setDefault() { runReset(["--default-only"]) }
 
   function open() {
-    root.meterAvailable = true
     popup.open = true
     refresh(true)
   }
@@ -87,6 +89,7 @@ BarWidget {
     root.meterLevel = 0
     root.meterHold = null
     root.meterText = Model.formatDb(-Infinity)
+    holdDecayTimer.stop()
   }
 
   function toggle() {
@@ -153,8 +156,6 @@ BarWidget {
       waitForEnd: true
       onStreamFinished: {
         var next = Model.parseStatus(text)
-        // A mic that comes back while the popup is open gets a fresh meter try.
-        if (next.present && !root.status.present) root.meterAvailable = true
         root.status = next
         root.statusSerial++
       }
@@ -247,22 +248,44 @@ BarWidget {
     }
   }
 
-  Process {
-    id: meterProc
-    command: [root.meterScript]
-    running: Model.meterRunning(popup.open, popup.visible, root.status.present, root.meterAvailable)
-    stdout: SplitParser {
-      onRead: function(data) {
-        var m = Model.parseMeterLine(data)
-        if (!m) return
-        root.meterLevel = m.peak
-        root.meterHold = Model.holdPeak(root.meterHold, m.peak, Date.now(), 1500)
-        root.meterText = Model.formatDb(m.db)
+  PwObjectTracker {
+    objects: root.wave3SourceNode ? [root.wave3SourceNode] : []
+  }
+
+  PwNodePeakMonitor {
+    id: peakMonitor
+    node: root.wave3SourceNode
+    enabled: Model.meterRunning(popup.open, popup.visible, root.status.present, root.meterAvailable)
+    onPeakChanged: {
+      var p = peakMonitor.peak
+      root.meterLevel = p
+      var prevHold = root.meterHold
+      root.meterHold = Model.holdPeak(prevHold, p, Date.now(), 1500)
+      if (!prevHold || p >= prevHold.value) {
+        holdDecayTimer.restart()
+      }
+      root.meterText = Model.formatPeakDb(p)
+    }
+    onEnabledChanged: {
+      if (!enabled) {
+        root.meterLevel = 0
+        root.meterHold = null
+        root.meterText = Model.formatDb(-Infinity)
+        holdDecayTimer.stop()
       }
     }
-    onExited: function(exitCode) {
-      if (exitCode !== 0 && popup.open) root.meterAvailable = false
-      root.meterLevel = 0
+  }
+
+  Timer {
+    id: holdDecayTimer
+    interval: 1500
+    repeat: false
+    onTriggered: {
+      var curPeak = peakMonitor.enabled ? peakMonitor.peak : 0
+      root.meterHold = Model.holdPeak(root.meterHold, curPeak, Date.now(), 1500)
+      if (root.meterHold && root.meterHold.value > 0) {
+        holdDecayTimer.restart()
+      }
     }
   }
 

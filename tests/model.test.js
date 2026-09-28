@@ -175,21 +175,45 @@ test("headerLine describes the mic", () => {
   assert.match(Model.headerLine(Model.parseStatus(OK.replace("default=yes", "default=no"))), / · not the default input · /)
 })
 
-test("parseMeterLine reads peak lines and rejects the rest", () => {
-  assert.deepEqual(Model.parseMeterLine("0"), { peak: 0, db: -Infinity })
-  const full = Model.parseMeterLine("32767\n")
-  assert.equal(full.peak, 1)
-  assert.ok(Math.abs(full.db) < 0.01)
-  const half = Model.parseMeterLine("16384")
-  assert.ok(Math.abs(half.peak - 0.5) < 0.001)
-  assert.ok(Math.abs(half.db - -6.02) < 0.01)
-  for (const line of ["abc", "-5", "40000", "", "12.5", undefined]) assert.equal(Model.parseMeterLine(line), null)
+test("peakToDb and formatPeakDb convert linear peaks to dBFS", () => {
+  assert.equal(Model.peakToDb(0), -Infinity)
+  assert.equal(Model.peakToDb(-0.5), -Infinity)
+  assert.equal(Model.peakToDb(NaN), -Infinity)
+  assert.equal(Model.peakToDb(undefined), -Infinity)
+  assert.equal(Model.peakToDb(1), 0)
+  assert.ok(Math.abs(Model.peakToDb(0.5) - -6.02) < 0.01)
+  assert.equal(Model.formatPeakDb(0), "-∞ dBFS")
+  assert.equal(Model.formatPeakDb(1), "0 dBFS")
+  assert.equal(Model.formatPeakDb(0.5), "-6 dBFS")
+  assert.equal(Model.formatPeakDb(-1), "-∞ dBFS")
+})
+
+test("isWave3SourceNode and findWave3Source match the Wave:3 source node", () => {
+  const wave3Node = { name: SRC, isSink: false, isStream: false }
+  const sinkNode = { name: SINK, isSink: true, isStream: false }
+  const streamNode = { name: SRC, isSink: false, isStream: true }
+  const monitorNode = { name: SINK + ".monitor", isSink: false, isStream: false }
+  const otherNode = { name: "alsa_input.pci-0000_0d_00.6.analog-stereo", isSink: false, isStream: false }
+
+  assert.equal(Model.isWave3SourceNode(wave3Node), true)
+  assert.equal(Model.isWave3SourceNode(sinkNode), false)
+  assert.equal(Model.isWave3SourceNode(streamNode), false)
+  assert.equal(Model.isWave3SourceNode(monitorNode), false)
+  assert.equal(Model.isWave3SourceNode(otherNode), false)
+  assert.equal(Model.isWave3SourceNode(null), false)
+  assert.equal(Model.isWave3SourceNode({}), false)
+
+  assert.equal(Model.findWave3Source([sinkNode, otherNode, wave3Node]), wave3Node)
+  assert.equal(Model.findWave3Source({ values: [sinkNode, wave3Node] }), wave3Node)
+  assert.equal(Model.findWave3Source([sinkNode, otherNode]), null)
+  assert.equal(Model.findWave3Source(null), null)
+  assert.equal(Model.findWave3Source([]), null)
 })
 
 test("formatDb and meterPosition", () => {
   assert.equal(Model.formatDb(-Infinity), "-∞ dBFS")
-  assert.equal(Model.formatDb(Model.parseMeterLine("0").db), "-∞ dBFS")
-  assert.equal(Model.formatDb(Model.parseMeterLine("32767").db), "0 dBFS")
+  assert.equal(Model.formatDb(Model.peakToDb(0)), "-∞ dBFS")
+  assert.equal(Model.formatDb(Model.peakToDb(1)), "0 dBFS")
   assert.equal(Model.formatDb(-23.4), "-23 dBFS")
   assert.equal(Model.meterPosition(0), 0)
   assert.equal(Model.meterPosition(1), 1)

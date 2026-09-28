@@ -1,5 +1,5 @@
-// Model.js — Pure parsing of wave3-reset --status and wave3-meter output,
-// and the pactl set commands, for the bar widget and its popup.
+// Model.js — Pure parsing of wave3-reset --status and wave3-hw status,
+// and pactl commands and PipeWire node helpers, for the bar widget and its popup.
 //
 // Dual-environment module: loadable directly in Quickshell QML via:
 //   import "Model.js" as Model
@@ -205,6 +205,27 @@ function sinkName(status) {
   return SINK_PATTERN.test(name) ? name : ""
 }
 
+// Whether a Pipewire node is the Wave:3 input source (non-stream, non-monitor).
+// Avoids reading node.properties unbound to prevent destabilizing PipeWire service.
+function isWave3SourceNode(node) {
+  if (!node || node.isSink || node.isStream) return false
+  var name = String(node.name || "")
+  if (!SOURCE_PATTERN.test(name) || /[.]monitor$/.test(name)) return false
+  return true
+}
+
+// Finds the first Wave:3 input source node in an array or Pipewire.nodes collection.
+function findWave3Source(nodes) {
+  if (!nodes) return null
+  var list = (nodes.values && typeof nodes.values !== "function") ? nodes.values : nodes
+  var len = list && typeof list.length === "number" ? list.length : 0
+  for (var i = 0; i < len; i++) {
+    var n = list[i]
+    if (isWave3SourceNode(n)) return n
+  }
+  return null
+}
+
 // pactl argv arrays by full name, or null when the name is missing or does
 // not match its pattern, so nothing is ever sent to another device.
 function setSourceVolumeCommand(status, pct) {
@@ -245,15 +266,12 @@ function volumeLabel(v) {
   return v === -1 ? "—" : v + " %"
 }
 
-// One wave3-meter line (peak |sample|, 0-32767) into a peak fraction and
-// dBFS. Returns null for anything else.
-function parseMeterLine(line) {
-  var text = String(line || "").trim()
-  if (!/^[0-9]+$/.test(text)) return null
-  var n = parseInt(text, 10)
-  if (n > 32767) return null
-  var peak = n / 32767
-  return { peak: peak, db: peak > 0 ? 20 * Math.log(peak) / Math.LN10 : -Infinity }
+// Converts a linear peak (0..1 fraction) into dBFS: 20 * log10(peak).
+// Non-positive or invalid peaks return -Infinity.
+function peakToDb(peak) {
+  var p = Number(peak)
+  if (!(p > 0)) return -Infinity
+  return 20 * Math.log(p) / Math.LN10
 }
 
 function formatDb(db) {
@@ -261,11 +279,16 @@ function formatDb(db) {
   return Math.round(db) + " dBFS"
 }
 
+// Formats a linear peak fraction directly to a dBFS string.
+function formatPeakDb(peak) {
+  return formatDb(peakToDb(peak))
+}
+
 // Meter bar position for a peak fraction on a -60..0 dBFS scale, so speech
 // levels use most of the bar.
 function meterPosition(peak) {
-  if (!(peak > 0)) return 0
-  var db = 20 * Math.log(peak) / Math.LN10
+  var db = peakToDb(peak)
+  if (!isFinite(db)) return 0
   return Math.max(0, Math.min(1, (db + 60) / 60))
 }
 
@@ -409,8 +432,11 @@ if (typeof module !== "undefined") {
     canSetDefault: canSetDefault,
     sliderValue: sliderValue,
     volumeLabel: volumeLabel,
-    parseMeterLine: parseMeterLine,
+    isWave3SourceNode: isWave3SourceNode,
+    findWave3Source: findWave3Source,
+    peakToDb: peakToDb,
     formatDb: formatDb,
+    formatPeakDb: formatPeakDb,
     meterPosition: meterPosition,
     holdPeak: holdPeak,
     meterRunning: meterRunning,
