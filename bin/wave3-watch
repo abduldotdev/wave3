@@ -1,15 +1,17 @@
 #!/bin/bash
 # Make the Elgato Wave:3 the default source whenever it (re)appears.
 #
-# Runs wave3-reset --default-only once at start, then again on every "new"
+# Runs wave3-reset --ensure-default once at start, then again on every "new"
 # source/card event from `pactl subscribe`. Only "new" events are handled:
 # setting the default emits "change" events, so this never loops on itself.
+# EasyEffects and other filter sources are chosen on purpose, so a virtual
+# default is left alone. --default-only and a plain reset still force the Wave:3.
 set -euo pipefail
 
 HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 RESET="${WAVE3_RESET:-$HERE/wave3-reset}"
 
-apply() { "$RESET" --default-only >/dev/null 2>&1 || true; }
+apply() { "$RESET" --ensure-default >/dev/null 2>&1 || true; }
 
 apply
 while read -r line; do

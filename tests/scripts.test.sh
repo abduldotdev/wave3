@@ -28,6 +28,8 @@ case "$1 ${2:-}" in
       [ -f "$STUB/sink" ] && echo "53	$(cat "$STUB/sink")	PipeWire	s24le 2ch 48000Hz	RUNNING"
     else
       echo "34	$OTHER	PipeWire	s16le 2ch 48000Hz	SUSPENDED"
+      # Filter source. Virtual when it is the default: not alsa_input./bluez_input., not a .monitor.
+      echo "70	easyeffects_source	PipeWire	float32le 2ch 48000Hz	RUNNING"
       # Listed before the real mic. A matcher that skips the .monitor check selects it.
       [ -f "$STUB/card" ] && echo "59	alsa_input.usb-Elgato_Systems_Elgato_Wave_3_TEST123-00.mono-fallback.monitor	PipeWire	s24le 1ch 48000Hz	SUSPENDED"
       [ -f "$STUB/source" ] && echo "$(cat "$STUB/srcidx")	$(cat "$STUB/source")	PipeWire	s24le 1ch 48000Hz	SUSPENDED"
@@ -111,6 +113,7 @@ check "absent: --status reports absent and exits 0" '[[ "$out" == *"present=no"*
 expected="$(cat <<EOF
 present=no
 default=no
+default_virtual=no
 muted=no
 state=absent
 profile=
@@ -131,6 +134,7 @@ check "present: --status changes nothing" '[ -z "$(calls)" ]'
 expected="$(cat <<EOF
 present=yes
 default=no
+default_virtual=no
 muted=yes
 state=SUSPENDED
 profile=output:analog-stereo+input:mono-fallback
@@ -189,6 +193,7 @@ check "server down: --status exits 0 with the absent shape" '[ "$rc" -eq 0 ] && 
 expected="$(cat <<EOF
 present=no
 default=no
+default_virtual=no
 muted=no
 state=absent
 profile=
@@ -211,6 +216,7 @@ out="$("$ROOT/bin/wave3-reset" --status)"
 expected="$(cat <<EOF
 present=no
 default=no
+default_virtual=no
 muted=no
 state=absent
 profile=output:analog-stereo
@@ -343,7 +349,7 @@ Event 'new' on card #48
 Event 'new' on sink-input #90
 EOF
 set +e; WAVE3_RESET="$TMP/fake-reset" "$ROOT/bin/wave3-watch" 2>"$TMP/watch.err"; rc=$?; set -e
-check "watch: runs at start and once per new source/card event only" '[ "$(cat "$STUB/resets")" = "$(printf "reset --default-only\n%.0s" 1 2 3)" ]'
+check "watch: runs at start and once per new source/card event only" '[ "$(cat "$STUB/resets")" = "$(printf "reset --ensure-default\n%.0s" 1 2 3)" ]'
 check "watch: exits non-zero when the subscription ends" '[ "$rc" -ne 0 ] && grep -q "subscribe ended" "$TMP/watch.err"'
 
 # Symlinked into another dir, the watcher still finds its sibling wave3-reset.
@@ -351,6 +357,95 @@ ln -s "$ROOT/bin/wave3-watch" "$TMP/bin/wave3-watch"
 fresh yes; : > "$STUB/events"
 set +e; "$TMP/bin/wave3-watch" 2>/dev/null; set -e
 check "watch: symlinked copy resolves sibling reset and defaults the mic" 'calls | grep -q "set-default-source $SRC"'
+
+# --- virtual default (EasyEffects) ---
+# fresh leaves the MX Brio (alsa_input) as default: physical, so not virtual.
+fresh yes
+out="$("$ROOT/bin/wave3-reset" --status)"
+check "status: physical MX Brio default is default_virtual=no" 'printf "%s\n" "$out" | grep -qx "default_virtual=no"'
+
+fresh yes
+echo easyeffects_source > "$STUB/default"
+out="$("$ROOT/bin/wave3-reset" --status)"
+check "status: easyeffects default is default_virtual=yes" 'printf "%s\n" "$out" | grep -qx "default_virtual=yes" && printf "%s\n" "$out" | grep -qx "default=no"'
+
+fresh yes
+"$ROOT/bin/wave3-reset" --default-only >/dev/null
+out="$("$ROOT/bin/wave3-reset" --status)"
+check "status: Wave:3 default is default_virtual=no" 'printf "%s\n" "$out" | grep -qx "default=yes" && printf "%s\n" "$out" | grep -qx "default_virtual=no"'
+
+fresh yes
+echo "${SRC}.monitor" > "$STUB/default"
+out="$("$ROOT/bin/wave3-reset" --status)"
+check "status: a .monitor default is default_virtual=no" 'printf "%s\n" "$out" | grep -qx "default_virtual=no"'
+
+fresh yes
+echo "alsa_input.usb-BOYA_BOYALINK-00.mono-fallback" > "$STUB/default"
+out="$("$ROOT/bin/wave3-reset" --status)"
+check "status: unlisted BOYALINK default is default_virtual=no" 'printf "%s\n" "$out" | grep -qx "default_virtual=no"'
+
+fresh yes
+echo "bluez_input.AA_BB" > "$STUB/default"
+out="$("$ROOT/bin/wave3-reset" --status)"
+check "status: bluez default is default_virtual=no" 'printf "%s\n" "$out" | grep -qx "default_virtual=no"'
+
+fresh no
+echo easyeffects_source > "$STUB/default"
+out="$("$ROOT/bin/wave3-reset" --status)"
+check "status: absent mic with easyeffects default is default_virtual=yes" 'printf "%s\n" "$out" | grep -qx "present=no" && printf "%s\n" "$out" | grep -qx "default_virtual=yes"'
+
+fresh yes
+echo easyeffects_source > "$STUB/default"
+: > "$STUB/log"
+set +e; msg="$("$ROOT/bin/wave3-reset" --ensure-default 2>"$TMP/err")"; rc=$?; set -e
+check "ensure-default: virtual default exits 0" '[ "$rc" -eq 0 ] && [ ! -s "$TMP/err" ]'
+check "ensure-default: leaves easyeffects_source as the default" '[ "$(cat "$STUB/default")" = easyeffects_source ]'
+check "ensure-default: virtual default changes nothing" '! grep -q " set-" "$STUB/log"'
+check "ensure-default: virtual default explains itself" '[[ "$msg" == *"easyeffects_source"* && "$msg" == *"virtual"* ]]'
+
+# Same no-op when the Wave:3 card is absent: do not error, do not require it.
+fresh no
+echo easyeffects_source > "$STUB/default"
+set +e; "$ROOT/bin/wave3-reset" --ensure-default >/dev/null; rc=$?; set -e
+check "ensure-default: virtual default with no Wave:3 still exits 0" '[ "$rc" -eq 0 ] && [ "$(cat "$STUB/default")" = easyeffects_source ]'
+
+ensure_forces() { # ensure_forces <label> <default-name>
+  fresh yes
+  echo "$2" > "$STUB/default"
+  "$ROOT/bin/wave3-reset" --ensure-default >/dev/null
+  check "$1" '[ "$(cat "$STUB/default")" = "$SRC" ]'
+}
+ensure_forces "ensure-default: re-asserts over an unlisted BOYALINK" "alsa_input.usb-BOYA_BOYALINK-00.mono-fallback"
+ensure_forces "ensure-default: re-asserts over the physical MX Brio" "$OTHER"
+ensure_forces "ensure-default: re-asserts over a .monitor" "${SRC}.monitor"
+
+fresh yes
+: > "$STUB/log"
+"$ROOT/bin/wave3-reset" --ensure-default >/dev/null
+check "ensure-default: re-assert never touches the profile" '! calls | grep -q set-card-profile && [ "$(cat "$STUB/default")" = "$SRC" ]'
+
+fresh yes
+echo easyeffects_source > "$STUB/default"
+"$ROOT/bin/wave3-reset" --default-only >/dev/null
+check "--default-only still forces the Wave:3 over a virtual default" '[ "$(cat "$STUB/default")" = "$SRC" ]'
+
+fresh yes
+echo easyeffects_source > "$STUB/default"
+"$ROOT/bin/wave3-reset" >/dev/null
+check "reset still forces the Wave:3 over a virtual default" '[ "$(cat "$STUB/default")" = "$SRC" ]'
+
+watch_default() { # watch_default <label> <default-name> <expected>
+  local label="$1" name="$2" want="$3"
+  fresh yes
+  echo "$name" > "$STUB/default"
+  : > "$STUB/events"
+  set +e; "$ROOT/bin/wave3-watch" 2>/dev/null; set -e
+  check "$label" '[ "$(cat "$STUB/default")" = "'"$want"'" ]'
+}
+watch_default "watch: leaves easyeffects_source as the default" easyeffects_source easyeffects_source
+watch_default "watch: re-asserts over an unlisted BOYALINK" "alsa_input.usb-BOYA_BOYALINK-00.mono-fallback" "$SRC"
+watch_default "watch: re-asserts over the physical MX Brio" "$OTHER" "$SRC"
+watch_default "watch: re-asserts over a .monitor" "${SRC}.monitor" "$SRC"
 
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }
 echo "all script tests passed"
