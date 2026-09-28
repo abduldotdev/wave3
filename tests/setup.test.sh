@@ -204,6 +204,54 @@ out="$("$SETUP" uninstall)"
 check "identical content symlink: removed by uninstall" '[ ! -e "$WP_CONF" ] && [ ! -L "$WP_CONF" ]'
 check "identical content symlink: target file untouched" '[ -f "$OTHER_REPO/51-elgato-wave3.conf" ]'
 
+# --- 9b. Identical-content and different symlink for service unit ---
+# e.g. user cloned repo elsewhere and linked unit from there
+OTHER_SVC_DIR="$TMP/other-svc-repo"
+mkdir -p "$OTHER_SVC_DIR"
+cp "$ROOT/systemd/wave3-watch.service" "$OTHER_SVC_DIR/wave3-watch.service"
+ln -s "$OTHER_SVC_DIR/wave3-watch.service" "$SVC_FILE"
+
+out="$("$SETUP" status)"
+check "identical content service symlink: recognized as installed" 'printf "%s\n" "$out" | grep -qx "service=installed"'
+
+# Install leaves it alone
+out="$("$SETUP" install)"
+check "identical content service symlink: install leaves symlink untouched" '[ -L "$SVC_FILE" ] && [ "$(readlink -f "$SVC_FILE")" = "$OTHER_SVC_DIR/wave3-watch.service" ] && [[ "$out" == *"ok: $SVC_FILE already installed"* ]]'
+
+# Uninstall removes only the symlink, not the target file
+out="$("$SETUP" uninstall)"
+check "identical content service symlink: uninstall removes only the symlink" '[ ! -e "$SVC_FILE" ] && [ ! -L "$SVC_FILE" ]'
+check "identical content service symlink: target file untouched" '[ -f "$OTHER_SVC_DIR/wave3-watch.service" ]'
+
+# Symlink to a DIFFERENT file -> foreign, untouched
+DIFFERENT_SVC="$TMP/different.service"
+cat > "$DIFFERENT_SVC" <<EOF
+[Unit]
+Description=Different Service
+EOF
+ln -s "$DIFFERENT_SVC" "$SVC_FILE"
+
+out="$("$SETUP" status)"
+check "different service symlink: recognized as foreign" 'printf "%s\n" "$out" | grep -qx "service=foreign"'
+
+# Install refuses and leaves it untouched
+set +e
+out="$("$SETUP" install 2>"$TMP/diff_svc_install.err")"
+rc=$?
+set -e
+check "different service symlink: install exits non-zero" '[ "$rc" -ne 0 ]'
+check "different service symlink: install skips on stderr" 'grep -q "skip (not ours): $SVC_FILE" "$TMP/diff_svc_install.err"'
+check "different service symlink: install leaves symlink untouched" '[ -L "$SVC_FILE" ] && [ "$(readlink -f "$SVC_FILE")" = "$DIFFERENT_SVC" ]'
+
+# Uninstall leaves different symlink untouched
+set +e
+out="$("$SETUP" uninstall 2>"$TMP/diff_svc_uninstall.err")"
+rc=$?
+set -e
+check "different service symlink: uninstall exits 0" '[ "$rc" -eq 0 ]'
+check "different service symlink: uninstall leaves symlink untouched" '[ -L "$SVC_FILE" ] && [ "$(readlink -f "$SVC_FILE")" = "$DIFFERENT_SVC" ]'
+rm -f "$SVC_FILE" "$DIFFERENT_SVC"
+
 # --- 10. Foreign files are never touched ---
 mkdir -p "$(dirname "$WP_CONF")" "$(dirname "$SVC_FILE")"
 echo "custom foreign wireplumber config" > "$WP_CONF"

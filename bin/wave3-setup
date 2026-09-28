@@ -50,6 +50,10 @@ get_service_status() {
       echo "installed"
       return 0
     fi
+    if [[ -n "$resolved" && -f "$resolved" ]] && cmp -s "$resolved" "$SVC_PLUGIN_FILE"; then
+      echo "installed"
+      return 0
+    fi
   fi
   if [[ -f "$SVC_FILE" && ! -L "$SVC_FILE" ]]; then
     if grep -qF "$SVC_MARKER" "$SVC_FILE" 2>/dev/null; then
