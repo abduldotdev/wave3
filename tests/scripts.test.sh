@@ -16,6 +16,7 @@ cat > "$TMP/bin/pactl" <<'STUB'
 #!/bin/bash
 # State lives in $STUB: card/source files mark presence, the rest hold values.
 echo "pactl $*" >> "$STUB/log"
+[ -f "$STUB/down" ] && { echo "Connection failure: Connection refused" >&2; exit 1; }
 case "$1 ${2:-}" in
   "list short")
     if [ "$3" = cards ]; then
@@ -23,16 +24,18 @@ case "$1 ${2:-}" in
       [ -f "$STUB/card" ] && echo "48	$(cat "$STUB/card")	alsa"
     else
       echo "34	$OTHER	PipeWire	s16le 2ch 48000Hz	SUSPENDED"
-      [ -f "$STUB/source" ] && echo "61	$(cat "$STUB/source")	PipeWire	s24le 1ch 48000Hz	SUSPENDED"
+      [ -f "$STUB/source" ] && echo "$(cat "$STUB/srcidx")	$(cat "$STUB/source")	PipeWire	s24le 1ch 48000Hz	SUSPENDED"
       [ -f "$STUB/card" ] && echo "60	alsa_output.usb-Elgato_Systems_Elgato_Wave_3_TEST123-00.analog-stereo.monitor	PipeWire	s24le 2ch 48000Hz	SUSPENDED"
     fi ;;
   "list cards")
     [ -f "$STUB/card" ] && printf 'Card #48\n\tName: %s\n\tActive Profile: %s\n' "$(cat "$STUB/card")" "$(cat "$STUB/profile")" ;;
   "get-default-source "*) cat "$STUB/default" ;;
   "get-source-mute "*) echo "Mute: $(cat "$STUB/muted")" ;;
-  "set-default-source "*) echo "$2" > "$STUB/default" ;;
+  "set-default-source "*) [ -f "$STUB/vanish" ] && { echo "Failure: No such entity" >&2; exit 1; }; echo "$2" > "$STUB/default" ;;
   "set-source-mute "*) [ "$3" = 0 ] && echo no > "$STUB/muted" || echo yes > "$STUB/muted" ;;
-  "set-card-profile "*) echo "$3" > "$STUB/profile" ;;
+  # A profile switch recreates the source under a new index unless keep-index.
+  "set-card-profile "*) echo "$3" > "$STUB/profile"
+    [ -f "$STUB/keep-index" ] || echo $(($(cat "$STUB/srcidx") + 1)) > "$STUB/srcidx" ;;
   "subscribe ") cat "$STUB/events" ;;
   *) echo "stub pactl: unexpected: $*" >&2; exit 2 ;;
 esac
@@ -52,6 +55,7 @@ fresh() {
   echo "${2:-$OTHER}" > "$STUB/default"
   echo "${3:-yes}" > "$STUB/muted"
   echo "output:analog-stereo+input:mono-fallback" > "$STUB/profile"
+  echo 61 > "$STUB/srcidx"
   if [ "$1" = yes ]; then echo "$CARD" > "$STUB/card"; echo "$SRC" > "$STUB/source"; fi
 }
 calls() { grep -v -e ' list ' -e ' get-' "$STUB/log" || true; }
@@ -99,6 +103,24 @@ check "--default-only never touches the profile" '! calls | grep -q set-card-pro
 fresh yes; rm "$STUB/source"
 set +e; err="$("$ROOT/bin/wave3-reset" 2>&1 >/dev/null)"; rc=$?; set -e
 check "lost source: reset gives up with a message" '[ "$rc" -ne 0 ] && [[ "$err" == *"did not come back"* ]]'
+
+# --- source index ---
+fresh yes
+"$ROOT/bin/wave3-reset" >/dev/null 2>"$TMP/err"
+check "index: each profile switch sees a recreated source (61 -> 63), no warning" '[ "$(cat "$STUB/srcidx")" = 63 ] && [ ! -s "$TMP/err" ]'
+fresh yes; touch "$STUB/keep-index"
+set +e; "$ROOT/bin/wave3-reset" >/dev/null 2>"$TMP/err"; rc=$?; set -e
+check "index: an unchanged index waits, warns, and still defaults the mic" '[ "$rc" -eq 0 ] && grep -q "was not recreated" "$TMP/err" && [ "$(cat "$STUB/default")" = "$SRC" ]'
+
+# --- transient failures ---
+fresh yes; touch "$STUB/vanish"
+set +e; err="$("$ROOT/bin/wave3-reset" --default-only 2>&1 >/dev/null)"; rc=$?; set -e
+check "vanish: missing source at set-default fails with a wave3-reset message" '[ "$rc" -ne 0 ] && [[ "$err" == "wave3-reset: "*"disappeared before it could be made default"* ]]'
+fresh yes; touch "$STUB/down"
+set +e; out="$("$ROOT/bin/wave3-reset" --status 2>/dev/null)"; rc=$?; set -e
+check "server down: --status exits 0 with the absent shape" '[ "$rc" -eq 0 ] && [[ "$out" == *"present=no"* && "$out" == *"state=absent"* ]]'
+set +e; err="$("$ROOT/bin/wave3-reset" 2>&1 >/dev/null)"; rc=$?; set -e
+check "server down: reset fails with a clear message" '[ "$rc" -ne 0 ] && [[ "$err" == *"cannot reach the audio server"* ]]'
 
 # --- watcher ---
 cat > "$TMP/fake-reset" <<'EOF'

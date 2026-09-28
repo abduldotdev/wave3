@@ -8,6 +8,8 @@
 #
 # The card and source are found by name pattern, never by serial or id.
 set -euo pipefail
+# pactl output is parsed below; keep it untranslated.
+export LC_ALL=C
 
 CARD_PATTERN='^alsa_card[.]usb-Elgato_Systems_Elgato_Wave_3'
 SOURCE_PATTERN='^alsa_input[.]usb-Elgato_Systems_Elgato_Wave_3'
@@ -23,9 +25,9 @@ find_card() {
   pactl list short cards | awk -v p="$CARD_PATTERN" '!found && $2 ~ p { print $2; found = 1 }'
 }
 
-# Prints "<name> <state>" for the Wave:3 input source.
+# Prints "<index> <name> <state>" for the Wave:3 input source.
 find_source() {
-  pactl list short sources | awk -v p="$SOURCE_PATTERN" '!found && $2 ~ p { print $2, $NF; found = 1 }'
+  pactl list short sources | awk -v p="$SOURCE_PATTERN" '!found && $2 ~ p { print $1, $2, $NF; found = 1 }'
 }
 
 active_profile() { # active_profile <card>
@@ -34,24 +36,40 @@ active_profile() { # active_profile <card>
     in_card && /^[[:space:]]*Active Profile:/ { print $3 }'
 }
 
-wait_for_source() {
-  local i
+# Both profiles keep the same mono-fallback source name, so a reopened source
+# is told apart from the old one by its index.
+switch_profile() { # switch_profile <card> <profile>
+  local before src i
+  before="$(find_source)"
+  pactl set-card-profile "$1" "$2"
   for ((i = 0; i < WAIT_TRIES; i++)); do
-    [ -n "$(find_source)" ] && return 0
+    src="$(find_source)"
+    if [ -n "$src" ] && [ "${src%% *}" != "${before%% *}" ]; then return 0; fi
     sleep 0.2
   done
-  die "Wave:3 source did not come back after switching profile"
+  [ -n "$src" ] || die "Wave:3 source did not come back after switching to $2"
+  echo "wave3-reset: warning: Wave:3 source was not recreated by switching to $2" >&2
 }
 
 set_default() { # set_default <source>
-  [ "$(pactl get-default-source)" = "$1" ] || pactl set-default-source "$1"
-  [ "$(pactl get-source-mute "$1")" = "Mute: no" ] || pactl set-source-mute "$1" 0
+  local mute
+  if [ "$(pactl get-default-source)" != "$1" ]; then
+    pactl set-default-source "$1" 2>/dev/null || die "Wave:3 source $1 disappeared before it could be made default"
+  fi
+  mute="$(pactl get-source-mute "$1" 2>/dev/null)" || die "Wave:3 source $1 disappeared before it could be unmuted"
+  [ "$mute" = "Mute: no" ] || pactl set-source-mute "$1" 0 2>/dev/null || die "Wave:3 source $1 disappeared before it could be unmuted"
+}
+
+source_name() { # source_name "<index> <name> <state>"
+  local rest="${1#* }"
+  echo "${rest% *}"
 }
 
 status() {
   local card src name state
-  card="$(find_card)"
-  src="$(find_source)"
+  # A failing pactl (server down) reads as absent: --status always exits 0.
+  card="$(find_card)" || card=""
+  src="$(find_source)" || src=""
   if [ -z "$src" ]; then
     echo "present=no"
     echo "default=no"
@@ -60,7 +78,7 @@ status() {
     echo "profile=$( [ -n "$card" ] && active_profile "$card" )"
     return 0
   fi
-  name="${src% *}"
+  name="$(source_name "$src")"
   state="${src##* }"
   echo "present=yes"
   echo "default=$( [ "$(pactl get-default-source)" = "$name" ] && echo yes || echo no )"
@@ -77,17 +95,16 @@ case "$mode" in
   *) die "unknown option: $mode (use --status or --default-only)" ;;
 esac
 
-card="$(find_card)"
+card="$(find_card)" || die "cannot reach the audio server (pactl failed)"
 [ -n "$card" ] || die "Elgato Wave:3 not found (is it plugged in?)"
 
 if [ "$mode" != "--default-only" ]; then
-  pactl set-card-profile "$card" "$DIGITAL_PROFILE"
-  wait_for_source
-  pactl set-card-profile "$card" "$ANALOG_PROFILE"
-  wait_for_source
+  switch_profile "$card" "$DIGITAL_PROFILE"
+  switch_profile "$card" "$ANALOG_PROFILE"
 fi
 
-src="$(find_source)"
+src="$(find_source)" || src=""
 [ -n "$src" ] || die "Elgato Wave:3 input source not found (card $card, profile $(active_profile "$card"))"
-set_default "${src% *}"
-echo "wave3-reset: ${src% *} is the default source"
+name="$(source_name "$src")"
+set_default "$name"
+echo "wave3-reset: $name is the default source"

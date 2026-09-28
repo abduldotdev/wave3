@@ -14,11 +14,12 @@ This plugin fixes the first with priorities and a watcher, avoids the second by 
 ## Features
 
 - **WirePlumber rule**: pins the analog profile, raises the Wave:3 input to priority 3000 (above every other source), and disables idle suspend on its input and output. Everything is matched by name pattern, never by serial number or numeric id.
-- **`wave3-reset`**: switches the card to the digital profile and back, sets the Wave:3 as the default source, and unmutes it. Safe to run repeatedly. Exits non-zero with a message on stderr when the mic is not plugged in.
+- **`wave3-reset`**: switches the card to the digital profile and back, waiting after each switch until the source reappears under a new index, then sets the Wave:3 as the default source and unmutes it. Safe to run repeatedly. Exits non-zero with a message on stderr when the mic is not plugged in.
   - `wave3-reset --default-only`: set default and unmute only, without touching the profile.
-  - `wave3-reset --status`: prints `present=`, `default=`, `muted=`, `state=`, `profile=`, `source=` lines. Always exits 0.
+  - `wave3-reset --status`: prints `present=`, `default=`, `muted=`, `state=`, `profile=`, `source=` lines. Always exits 0, and prints the absent shape when the mic or the audio server is missing.
 - **`wave3-watch` service**: listens to `pactl subscribe` and runs `wave3-reset --default-only` once at start and whenever a source or card is added. It only reacts to `new` events, so the `change` events from setting the default never retrigger it.
-- **Bar widget**: a microphone icon, dimmed when the Wave:3 is absent and in the warning colour when it is not the default or is muted. The tooltip shows the state. Click to run `wave3-reset`. Status is polled every 5 s.
+  - **This re-asserts the Wave:3 as the default whenever *any* source appears**, not only the Wave:3. Plugging in a headset or starting a virtual source moves the default back to the Wave:3 if it is connected. To choose another mic yourself, stop the watcher for this session with `systemctl --user stop wave3-watch`, or turn it off for good with `systemctl --user disable --now wave3-watch`.
+- **Bar widget**: a microphone icon, dimmed when the Wave:3 is absent and in the warning colour when it is not the default or is muted. The tooltip shows the state. Click to run `wave3-reset`. Status is polled every 10 s.
 - **IPC**: `omarchy-shell abduldotdev.wave3 reset` and `omarchy-shell abduldotdev.wave3 refresh`.
 
 ## Files
