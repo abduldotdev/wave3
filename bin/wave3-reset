@@ -13,6 +13,8 @@ export LC_ALL=C
 
 CARD_PATTERN='^alsa_card[.]usb-Elgato_Systems_Elgato_Wave_3'
 SOURCE_PATTERN='^alsa_input[.]usb-Elgato_Systems_Elgato_Wave_3'
+# Headphone output. Reported even when the mic source is absent.
+SINK_PATTERN='^alsa_output[.]usb-Elgato_Systems_Elgato_Wave_3'
 ANALOG_PROFILE="output:analog-stereo+input:mono-fallback"
 DIGITAL_PROFILE="output:iec958-stereo+input:mono-fallback"
 # Polls of 0.2 s while waiting for the source to come back after a switch.
@@ -28,6 +30,24 @@ find_card() {
 # Prints "<index> <name> <state>" for the Wave:3 input source.
 find_source() {
   pactl list short sources | awk -v p="$SOURCE_PATTERN" '!found && $2 ~ p { print $1, $2, $NF; found = 1 }'
+}
+
+# Prints "<index> <name> <state>" for the Wave:3 headphone sink.
+find_sink() {
+  pactl list short sinks | awk -v p="$SINK_PATTERN" '!found && $2 ~ p { print $1, $2, $NF; found = 1 }'
+}
+
+# Rounded mean of every N% token on the first line. Prints nothing if there
+# are none. Reads the whole input so a short read cannot SIGPIPE pactl.
+percent() {
+  awk '
+    NR == 1 {
+      n = 0
+      s = 0
+      for (i = 1; i <= NF; i++)
+        if ($i ~ /^[0-9]+%$/) { s += substr($i, 1, length($i) - 1); n++ }
+      if (n) printf "%d\n", int(s / n + 0.5)
+    }'
 }
 
 active_profile() { # active_profile <card>
@@ -66,26 +86,45 @@ source_name() { # source_name "<index> <name> <state>"
 }
 
 status() {
-  local card src name state
+  local card src name state sinkline sink vol svol smute smute_line
   # A failing pactl (server down) reads as absent: --status always exits 0.
   card="$(find_card)" || card=""
   src="$(find_source)" || src=""
+  sinkline="$(find_sink)" || sinkline=""
+  sink=""
+  vol=""
+  svol=""
+  smute="no"
+  if [ -n "$sinkline" ]; then
+    sink="$(source_name "$sinkline")"
+    svol="$(pactl get-sink-volume "$sink" 2>/dev/null | percent)" || svol=""
+    if smute_line="$(pactl get-sink-mute "$sink" 2>/dev/null)"; then
+      [ "$smute_line" = "Mute: yes" ] && smute="yes" || smute="no"
+    else
+      smute=""
+    fi
+  fi
   if [ -z "$src" ]; then
     echo "present=no"
     echo "default=no"
     echo "muted=no"
     echo "state=absent"
     echo "profile=$( [ -n "$card" ] && active_profile "$card" )"
-    return 0
+  else
+    name="$(source_name "$src")"
+    state="${src##* }"
+    vol="$(pactl get-source-volume "$name" 2>/dev/null | percent)" || vol=""
+    echo "present=yes"
+    echo "default=$( [ "$(pactl get-default-source)" = "$name" ] && echo yes || echo no )"
+    echo "muted=$( [ "$(pactl get-source-mute "$name")" = "Mute: yes" ] && echo yes || echo no )"
+    echo "state=$state"
+    echo "profile=$( [ -n "$card" ] && active_profile "$card" )"
+    echo "source=$name"
   fi
-  name="$(source_name "$src")"
-  state="${src##* }"
-  echo "present=yes"
-  echo "default=$( [ "$(pactl get-default-source)" = "$name" ] && echo yes || echo no )"
-  echo "muted=$( [ "$(pactl get-source-mute "$name")" = "Mute: yes" ] && echo yes || echo no )"
-  echo "state=$state"
-  echo "profile=$( [ -n "$card" ] && active_profile "$card" )"
-  echo "source=$name"
+  echo "volume=$vol"
+  echo "sink=$sink"
+  echo "sink_volume=$svol"
+  echo "sink_muted=$smute"
 }
 
 mode="${1:-}"
