@@ -1,25 +1,96 @@
 #!/bin/bash
-# Make the Elgato Wave:3 the default source whenever it (re)appears.
+# Make the Elgato Wave:3 the default source whenever it (re)appears,
+# and restore its saved hardware settings.
 #
 # Runs wave3-reset --ensure-default once at start, then again on every "new"
 # source/card event from `pactl subscribe`. Only "new" events are handled:
 # setting the default emits "change" events, so this never loops on itself.
 # EasyEffects and other filter sources are chosen on purpose, so a virtual
 # default is left alone. --default-only and a plain reset still force the Wave:3.
+#
+# Those same moments also run `wave3-hw apply` in the background (settle 2.5s,
+# 2 retries). A new apply is dropped while one is running, and within
+# WAVE3_APPLY_INTERVAL seconds of the previous start (default 5; 0 disables
+# only that window). Apply failures are logged and ignored. When the
+# subscription ends, an in-flight apply is allowed to finish, then this
+# process exits 1 so systemd restarts it.
 set -euo pipefail
 
 HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 RESET="${WAVE3_RESET:-$HERE/wave3-reset}"
+HW="${WAVE3_HW:-$HERE/wave3-hw}"
+APPLY_INTERVAL="${WAVE3_APPLY_INTERVAL:-5}"
+# A non-integer must not take down the loop; the documented default is 5.
+case "$APPLY_INTERVAL" in
+  *[!0-9]*) APPLY_INTERVAL=5 ;;
+esac
 
-apply() { "$RESET" --ensure-default >/dev/null 2>&1 || true; }
+apply_pid=""
+apply_token=""
+apply_started=""
 
-apply
+ensure_default() { "$RESET" --ensure-default >/dev/null 2>&1 || true; }
+
+# kill -0 is true for a zombie, so a finished apply would look busy forever.
+# The child removes the token on exit; that is what "done" means.
+apply_running() {
+  [[ -n "$apply_pid" ]] || return 1
+  if [[ -n "$apply_token" && -e "$apply_token" ]] && kill -0 "$apply_pid" 2>/dev/null; then
+    return 0
+  fi
+  wait "$apply_pid" 2>/dev/null || true
+  apply_pid=""
+  if [[ -n "$apply_token" ]]; then
+    rm -f "$apply_token"
+  fi
+  apply_token=""
+  return 1
+}
+
+start_apply() {
+  if apply_running; then
+    return 0
+  fi
+  if [[ "$APPLY_INTERVAL" -gt 0 && -n "$apply_started" ]]; then
+    if (( SECONDS - apply_started < 10#$APPLY_INTERVAL )); then
+      return 0
+    fi
+  fi
+  apply_token=$(mktemp "${TMPDIR:-/tmp}/wave3-watch-apply.XXXXXX")
+  apply_started=$SECONDS
+  (
+    set +e
+    trap 'rm -f "$apply_token"' EXIT
+    out=$("$HW" apply --settle 2.5 --retries 2)
+    rc=$?
+    joined=${out//$'\n'/ }
+    if [[ -n "$joined" ]]; then
+      printf 'wave3-watch: apply rc=%s %s\n' "$rc" "$joined" >&2
+    else
+      printf 'wave3-watch: apply rc=%s\n' "$rc" >&2
+    fi
+  ) </dev/null &
+  apply_pid=$!
+}
+
+on_appear() {
+  ensure_default
+  start_apply
+}
+
+on_appear
 while read -r line; do
   case "$line" in
-    "Event 'new' on source #"*|"Event 'new' on card #"*) apply ;;
+    "Event 'new' on source #"*|"Event 'new' on card #"*) on_appear ;;
   esac
 done < <(pactl subscribe)
 
+if [[ -n "$apply_pid" ]]; then
+  wait "$apply_pid" || true
+fi
+if [[ -n "$apply_token" ]]; then
+  rm -f "$apply_token"
+fi
 # pactl exits when the server goes away; fail so systemd restarts us.
 echo "wave3-watch: pactl subscribe ended" >&2
 exit 1
