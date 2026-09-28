@@ -1,11 +1,23 @@
 #!/bin/bash
 # Exercises bin/wave3-reset, bin/wave3-meter and bin/wave3-watch against stub
 # pactl and parec binaries on PATH. Never touches the real audio server.
+# WAVE3_HW is a no-op stub so no watcher run executes the real wave3-hw.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+
+# Default for every wave3-watch invocation, including the pre-existing cases.
+# A case that needs a different result overrides WAVE3_HW for that command.
+cat > "$TMP/wave3-hw-noop" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "$TMP/hw-noop.log"
+printf '%s\n' 'store=missing changed= reapplied= result=noop'
+exit 0
+EOF
+chmod +x "$TMP/wave3-hw-noop"
+export WAVE3_HW="$TMP/wave3-hw-noop"
 
 CARD="alsa_card.usb-Elgato_Systems_Elgato_Wave_3_TEST123-00"
 SRC="alsa_input.usb-Elgato_Systems_Elgato_Wave_3_TEST123-00.mono-fallback"
@@ -461,6 +473,8 @@ watch_default "watch: leaves easyeffects_source as the default" easyeffects_sour
 watch_default "watch: re-asserts over an unlisted BOYALINK" "alsa_input.usb-BOYA_BOYALINK-00.mono-fallback" "$SRC"
 watch_default "watch: re-asserts over the physical MX Brio" "$OTHER" "$SRC"
 watch_default "watch: re-asserts over a .monitor" "${SRC}.monitor" "$SRC"
+# Event fixture, the symlink run, and the four watch_default runs: one apply each.
+check "watch: pre-existing cases use the no-op apply stub" '[ "$(cat "$TMP/hw-noop.log")" = "$(printf "apply --settle 2.5 --retries 2\n%.0s" 1 2 3 4 5 6)" ]'
 
 # --- watcher apply (stub WAVE3_HW; never the real device) ---
 cat > "$TMP/fake-hw" <<'EOF'

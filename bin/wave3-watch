@@ -28,6 +28,18 @@ esac
 apply_pid=""
 apply_token=""
 apply_started=""
+# Busy marker. The apply child removes it when it finishes; this process
+# removes it again on the way out, including set -e exits.
+TOKEN_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+if [[ ! -d "$TOKEN_DIR" || ! -w "$TOKEN_DIR" ]]; then
+  TOKEN_DIR="${TMPDIR:-/tmp}"
+fi
+cleanup() {
+  if [[ "${BASHPID:-}" == "$$" && -n "${apply_token:-}" ]]; then
+    rm -f "$apply_token"
+  fi
+}
+trap cleanup EXIT
 
 ensure_default() { "$RESET" --ensure-default >/dev/null 2>&1 || true; }
 
@@ -56,7 +68,7 @@ start_apply() {
       return 0
     fi
   fi
-  apply_token=$(mktemp "${TMPDIR:-/tmp}/wave3-watch-apply.XXXXXX")
+  apply_token=$(mktemp "$TOKEN_DIR/wave3-watch-apply.XXXXXX")
   apply_started=$SECONDS
   (
     set +e
