@@ -21,6 +21,7 @@ BarWidget {
   // A read asked for while one is running; it may predate a set, so run again.
   property bool statusRefreshAgain: false
   property bool hwRefreshAgain: false
+  property bool hwRefreshForce: false
   property real lastHwPollTime: 0
   property int statusSerial: 0
 
@@ -49,11 +50,10 @@ BarWidget {
 
   function refreshHw(force) {
     if (hwSetProc.running || hasPendingHwSets()) return
-    if (!force && !popup.open) {
-      if (Date.now() - root.lastHwPollTime < 30000) return
-    }
+    if (!Model.hwPollDue(Date.now(), root.lastHwPollTime, force || popup.open)) return
     if (hwStatusProc.running) {
       root.hwRefreshAgain = true
+      root.hwRefreshForce = root.hwRefreshForce || Boolean(force)
       return
     }
     root.lastHwPollTime = Date.now()
@@ -179,8 +179,10 @@ BarWidget {
     }
     onExited: {
       if (root.hwRefreshAgain) {
+        var forceAgain = root.hwRefreshForce
         root.hwRefreshAgain = false
-        root.refreshHw(root.popup.open)
+        root.hwRefreshForce = false
+        root.refreshHw(forceAgain || popup.open)
       }
     }
   }
@@ -230,15 +232,12 @@ BarWidget {
       } else {
         var res = Model.parseHwSetOutput(hwSetProc.lastStdout)
         if (res.saved === "yes") {
-          root.errorText = ""
           root.savedHint = Model.SAVED_HINT
           savedHintTimer.restart()
         } else if (res.saved === "error") {
           root.savedHint = ""
           root.errorText = "Changed, but could not save it for reconnect"
           errorTimer.restart()
-        } else {
-          root.errorText = ""
         }
       }
       root.pumpHwSets()

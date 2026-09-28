@@ -283,6 +283,20 @@ function meterRunning(open, shown, present, available) {
   return open === true && shown === true && present === true && available === true
 }
 
+// Whether a hardware poll is due. Forced reads always run. Closed-popup
+// reads are gated by intervalMs (default 30000); negative elapsed times
+// from backwards wall-clock jumps are treated as due so polling does not hang.
+function hwPollDue(now, last, force, intervalMs) {
+  if (force) return true
+  var interval = typeof intervalMs === "number" ? intervalMs : 30000
+  var n = Number(now)
+  var l = Number(last)
+  if (isNaN(n) || isNaN(l)) return true
+  var dt = n - l
+  return dt < 0 || dt >= interval
+}
+
+
 var HW_FIELD_MAP = {
   gain_db: "gain_db",
   mute: "mute",
@@ -399,6 +413,7 @@ if (typeof module !== "undefined") {
     formatDb: formatDb,
     meterPosition: meterPosition,
     holdPeak: holdPeak,
-    meterRunning: meterRunning
+    meterRunning: meterRunning,
+    hwPollDue: hwPollDue
   }
 }

@@ -490,3 +490,39 @@ test("parseHwSetOutput reads various set output forms (T-8)", () => {
   assert.equal(Model.SAVED_HINT, "Saved · restores on reconnect")
 })
 
+test("hwPollDue handles forced, intervals, and backwards wall-clock jumps", () => {
+  // Forced reads always return true regardless of timing
+  assert.equal(Model.hwPollDue(1000, 500, true), true)
+  assert.equal(Model.hwPollDue(500, 1000, true), true)
+  assert.equal(Model.hwPollDue(0, 0, true), true)
+
+  // Unforced: interval not reached returns false
+  assert.equal(Model.hwPollDue(1000, 500, false), false)
+  assert.equal(Model.hwPollDue(29999, 0, false), false)
+  assert.equal(Model.hwPollDue(100000, 70001, false), false)
+
+  // Unforced: interval reached or exceeded returns true
+  assert.equal(Model.hwPollDue(30000, 0, false), true)
+  assert.equal(Model.hwPollDue(30001, 0, false), true)
+  assert.equal(Model.hwPollDue(100000, 70000, false), true)
+  assert.equal(Model.hwPollDue(100000, 50000, false), true)
+
+  // Backwards wall-clock jumps (NTP correction, manual time change)
+  // Negative elapsed time must be treated as due so polling does not hang
+  assert.equal(Model.hwPollDue(5000, 10000, false), true)
+  assert.equal(Model.hwPollDue(100000, 3700000, false), true)
+
+  // Initial poll with last = 0 and current timestamp
+  assert.equal(Model.hwPollDue(1700000000000, 0, false), true)
+
+  // Custom intervalMs
+  assert.equal(Model.hwPollDue(4999, 0, false, 5000), false)
+  assert.equal(Model.hwPollDue(5000, 0, false, 5000), true)
+  assert.equal(Model.hwPollDue(6000, 0, false, 5000), true)
+  assert.equal(Model.hwPollDue(0, 5000, false, 5000), true)
+
+  // Non-numeric or missing inputs fail-safe to true
+  assert.equal(Model.hwPollDue(NaN, 0, false), true)
+  assert.equal(Model.hwPollDue(1000, undefined, false), true)
+})
+
