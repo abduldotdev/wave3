@@ -131,7 +131,7 @@ PopupWindow {
   }
 
   component WaveSlider: Column {
-    id: ws
+    id: waveSliderCtrl
     property string label: ""
     // Raw status percent: -1 is unknown, above 100 is shown but not selectable.
     property int percent: -1
@@ -148,8 +148,8 @@ PopupWindow {
     Connections {
       target: root
       function onStatusSerialChanged() {
-        ws.pendingVal = -1
-        if (!slider.dragging) ws.liveVal = Model.sliderValue(ws.percent)
+        waveSliderCtrl.pendingVal = -1
+        if (!slider.dragging) waveSliderCtrl.liveVal = Model.sliderValue(waveSliderCtrl.percent)
       }
     }
 
@@ -162,8 +162,8 @@ PopupWindow {
       repeat: false
       onTriggered: {
         root.isDragging = false
-        ws.pendingVal = ws.liveVal
-        ws.committed(ws.liveVal)
+        waveSliderCtrl.pendingVal = waveSliderCtrl.liveVal
+        waveSliderCtrl.committed(waveSliderCtrl.liveVal)
       }
     }
 
@@ -171,8 +171,8 @@ PopupWindow {
       width: parent.width
 
       Text {
-        text: ws.label
-        color: ws.controlEnabled ? root.fg : root.safeMuted
+        text: waveSliderCtrl.label
+        color: waveSliderCtrl.controlEnabled ? root.fg : root.safeMuted
         font.family: root.fontFamily
         font.pixelSize: 12
         font.bold: true
@@ -182,8 +182,8 @@ PopupWindow {
 
       Text {
         id: valText
-        text: slider.dragging ? ws.liveVal + " %"
-          : (ws.pendingVal >= 0 ? ws.pendingVal + " %" : Model.volumeLabel(ws.percent))
+        text: slider.dragging ? waveSliderCtrl.liveVal + " %"
+          : (waveSliderCtrl.pendingVal >= 0 ? waveSliderCtrl.pendingVal + " %" : Model.volumeLabel(waveSliderCtrl.percent))
         color: root.safeMuted
         font.family: root.fontFamily
         font.pixelSize: 11
@@ -199,32 +199,32 @@ PopupWindow {
         id: slider
         anchors.fill: parent
         bar: root.bar
-        enabled: ws.controlEnabled
-        opacity: ws.controlEnabled ? 1.0 : 0.4
+        enabled: waveSliderCtrl.controlEnabled
+        opacity: waveSliderCtrl.controlEnabled ? 1.0 : 0.4
         minimum: 0
         maximum: 100
         step: 1
         integer: true
-        value: ws.pendingVal >= 0 ? ws.pendingVal : Model.sliderValue(ws.percent)
+        value: waveSliderCtrl.pendingVal >= 0 ? waveSliderCtrl.pendingVal : Model.sliderValue(waveSliderCtrl.percent)
 
         onMoved: function(v) {
-          ws.liveVal = Math.round(v)
+          waveSliderCtrl.liveVal = Math.round(v)
           root.isDragging = true
           debounceTimer.restart()
         }
         onReleased: function(v) {
           debounceTimer.stop()
           root.isDragging = false
-          ws.liveVal = Math.round(v)
-          ws.pendingVal = ws.liveVal
-          ws.committed(ws.liveVal)
+          waveSliderCtrl.liveVal = Math.round(v)
+          waveSliderCtrl.pendingVal = waveSliderCtrl.liveVal
+          waveSliderCtrl.committed(waveSliderCtrl.liveVal)
         }
       }
     }
   }
 
   component WaveToggle: Row {
-    id: wt
+    id: waveToggleCtrl
     property string label: ""
     property bool checked: false
     property bool controlEnabled: true
@@ -235,8 +235,8 @@ PopupWindow {
 
     Text {
       id: toggleText
-      text: wt.label
-      color: wt.controlEnabled ? root.fg : root.safeMuted
+      text: waveToggleCtrl.label
+      color: waveToggleCtrl.controlEnabled ? root.fg : root.safeMuted
       font.family: root.fontFamily
       font.pixelSize: 12
       font.bold: true
@@ -246,19 +246,19 @@ PopupWindow {
 
     ToggleSwitch {
       id: toggleSwitch
-      checked: wt.checked
+      checked: waveToggleCtrl.checked
       busy: root.busy
-      enabled: wt.controlEnabled
-      opacity: wt.controlEnabled ? 1.0 : 0.4
+      enabled: waveToggleCtrl.controlEnabled
+      opacity: waveToggleCtrl.controlEnabled ? 1.0 : 0.4
       foreground: root.fg
       accent: root.accent
       anchors.verticalCenter: parent.verticalCenter
-      onToggled: wt.toggled()
+      onToggled: waveToggleCtrl.toggled()
     }
   }
 
   component GainControl: Column {
-    id: gc
+    id: gainCtrl
     property real gainDb: 0
     property bool controlEnabled: true
     signal committed(real val)
@@ -270,8 +270,8 @@ PopupWindow {
     Connections {
       target: root
       function onStatusSerialChanged() {
-        gc.pendingVal = -999
-        if (!slider.dragging) gc.liveVal = gc.gainDb
+        gainCtrl.pendingVal = -999
+        if (!slider.dragging) gainCtrl.liveVal = gainCtrl.gainDb
       }
     }
 
@@ -284,8 +284,8 @@ PopupWindow {
       repeat: false
       onTriggered: {
         root.isDragging = false
-        gc.pendingVal = gc.liveVal
-        gc.committed(gc.liveVal)
+        gainCtrl.pendingVal = gainCtrl.liveVal
+        gainCtrl.committed(gainCtrl.liveVal)
       }
     }
 
@@ -294,7 +294,7 @@ PopupWindow {
 
       Text {
         text: "Gain"
-        color: gc.controlEnabled ? root.fg : root.safeMuted
+        color: gainCtrl.controlEnabled ? root.fg : root.safeMuted
         font.family: root.fontFamily
         font.pixelSize: 12
         font.bold: true
@@ -309,8 +309,8 @@ PopupWindow {
 
         Text {
           id: gainValText
-          text: (slider.dragging ? gc.liveVal : (gc.pendingVal >= 0 ? gc.pendingVal : gc.gainDb)).toFixed(1) + " dB"
-          color: gc.controlEnabled ? root.fg : root.safeMuted
+          text: (slider.dragging ? gainCtrl.liveVal : (gainCtrl.pendingVal >= 0 ? gainCtrl.pendingVal : gainCtrl.gainDb)).toFixed(1) + " dB"
+          color: gainCtrl.controlEnabled ? root.fg : root.safeMuted
           font.family: root.fontFamily
           font.pixelSize: 15
           font.bold: true
@@ -320,7 +320,7 @@ PopupWindow {
         Button {
           text: "−"
           bordered: true
-          enabled: gc.controlEnabled && ((gc.pendingVal >= 0 ? gc.pendingVal : gc.gainDb) > 0)
+          enabled: gainCtrl.controlEnabled && ((gainCtrl.pendingVal >= 0 ? gainCtrl.pendingVal : gainCtrl.gainDb) > 0)
           foreground: root.fg
           background: root.bg
           accent: root.accent
@@ -330,18 +330,18 @@ PopupWindow {
           verticalPadding: 2
           anchors.verticalCenter: parent.verticalCenter
           onClicked: {
-            var cur = gc.pendingVal >= 0 ? gc.pendingVal : gc.gainDb
+            var cur = gainCtrl.pendingVal >= 0 ? gainCtrl.pendingVal : gainCtrl.gainDb
             var next = Model.quantizeGain(cur - 0.5)
-            gc.liveVal = next
-            gc.pendingVal = next
-            gc.committed(next)
+            gainCtrl.liveVal = next
+            gainCtrl.pendingVal = next
+            gainCtrl.committed(next)
           }
         }
 
         Button {
           text: "+"
           bordered: true
-          enabled: gc.controlEnabled && ((gc.pendingVal >= 0 ? gc.pendingVal : gc.gainDb) < 40)
+          enabled: gainCtrl.controlEnabled && ((gainCtrl.pendingVal >= 0 ? gainCtrl.pendingVal : gainCtrl.gainDb) < 40)
           foreground: root.fg
           background: root.bg
           accent: root.accent
@@ -351,11 +351,11 @@ PopupWindow {
           verticalPadding: 2
           anchors.verticalCenter: parent.verticalCenter
           onClicked: {
-            var cur = gc.pendingVal >= 0 ? gc.pendingVal : gc.gainDb
+            var cur = gainCtrl.pendingVal >= 0 ? gainCtrl.pendingVal : gainCtrl.gainDb
             var next = Model.quantizeGain(cur + 0.5)
-            gc.liveVal = next
-            gc.pendingVal = next
-            gc.committed(next)
+            gainCtrl.liveVal = next
+            gainCtrl.pendingVal = next
+            gainCtrl.committed(next)
           }
         }
       }
@@ -369,32 +369,32 @@ PopupWindow {
         id: slider
         anchors.fill: parent
         bar: root.bar
-        enabled: gc.controlEnabled
-        opacity: gc.controlEnabled ? 1.0 : 0.4
+        enabled: gainCtrl.controlEnabled
+        opacity: gainCtrl.controlEnabled ? 1.0 : 0.4
         minimum: 0
         maximum: 40
         step: 0.5
         integer: false
-        value: gc.pendingVal >= 0 ? gc.pendingVal : gc.gainDb
+        value: gainCtrl.pendingVal >= 0 ? gainCtrl.pendingVal : gainCtrl.gainDb
 
         onMoved: function(v) {
-          gc.liveVal = Model.quantizeGain(v)
+          gainCtrl.liveVal = Model.quantizeGain(v)
           root.isDragging = true
           debounceTimer.restart()
         }
         onReleased: function(v) {
           debounceTimer.stop()
           root.isDragging = false
-          gc.liveVal = Model.quantizeGain(v)
-          gc.pendingVal = gc.liveVal
-          gc.committed(gc.liveVal)
+          gainCtrl.liveVal = Model.quantizeGain(v)
+          gainCtrl.pendingVal = gainCtrl.liveVal
+          gainCtrl.committed(gainCtrl.liveVal)
         }
       }
     }
   }
 
   component HwSlider: Column {
-    id: hs
+    id: hwSliderCtrl
     property string label: ""
     property string sublabel: ""
     property real value: 0
@@ -413,14 +413,14 @@ PopupWindow {
     Connections {
       target: root
       function onStatusSerialChanged() {
-        hs.pendingVal = -9999
-        if (!slider.dragging) hs.liveVal = hs.value
+        hwSliderCtrl.pendingVal = -9999
+        if (!slider.dragging) hwSliderCtrl.liveVal = hwSliderCtrl.value
       }
     }
 
     function formatVal(v) {
-      if (hs.integer) return Math.round(v) + (hs.unit ? " " + hs.unit : "")
-      return v.toFixed(1) + (hs.unit ? " " + hs.unit : "")
+      if (hwSliderCtrl.integer) return Math.round(v) + (hwSliderCtrl.unit ? " " + hwSliderCtrl.unit : "")
+      return v.toFixed(1) + (hwSliderCtrl.unit ? " " + hwSliderCtrl.unit : "")
     }
 
     width: parent.width
@@ -432,8 +432,8 @@ PopupWindow {
       repeat: false
       onTriggered: {
         root.isDragging = false
-        hs.pendingVal = hs.liveVal
-        hs.committed(hs.liveVal)
+        hwSliderCtrl.pendingVal = hwSliderCtrl.liveVal
+        hwSliderCtrl.committed(hwSliderCtrl.liveVal)
       }
     }
 
@@ -445,16 +445,16 @@ PopupWindow {
         width: parent.width - valText.implicitWidth
 
         Text {
-          text: hs.label
-          color: hs.controlEnabled ? root.fg : root.safeMuted
+          text: hwSliderCtrl.label
+          color: hwSliderCtrl.controlEnabled ? root.fg : root.safeMuted
           font.family: root.fontFamily
           font.pixelSize: 12
           font.bold: true
         }
 
         Text {
-          visible: hs.sublabel !== ""
-          text: hs.sublabel
+          visible: hwSliderCtrl.sublabel !== ""
+          text: hwSliderCtrl.sublabel
           color: root.safeMuted
           font.family: root.fontFamily
           font.pixelSize: 10
@@ -463,8 +463,8 @@ PopupWindow {
 
       Text {
         id: valText
-        text: slider.dragging ? hs.formatVal(hs.liveVal)
-          : (hs.pendingVal !== -9999 ? hs.formatVal(hs.pendingVal) : hs.formatVal(hs.value))
+        text: slider.dragging ? hwSliderCtrl.formatVal(hwSliderCtrl.liveVal)
+          : (hwSliderCtrl.pendingVal !== -9999 ? hwSliderCtrl.formatVal(hwSliderCtrl.pendingVal) : hwSliderCtrl.formatVal(hwSliderCtrl.value))
         color: root.safeMuted
         font.family: root.fontFamily
         font.pixelSize: 11
@@ -480,27 +480,27 @@ PopupWindow {
         id: slider
         anchors.fill: parent
         bar: root.bar
-        enabled: hs.controlEnabled
-        opacity: hs.controlEnabled ? 1.0 : 0.4
-        minimum: hs.minimum
-        maximum: hs.maximum
-        step: hs.step
-        integer: hs.integer
-        value: hs.pendingVal !== -9999 ? hs.pendingVal : hs.value
+        enabled: hwSliderCtrl.controlEnabled
+        opacity: hwSliderCtrl.controlEnabled ? 1.0 : 0.4
+        minimum: hwSliderCtrl.minimum
+        maximum: hwSliderCtrl.maximum
+        step: hwSliderCtrl.step
+        integer: hwSliderCtrl.integer
+        value: hwSliderCtrl.pendingVal !== -9999 ? hwSliderCtrl.pendingVal : hwSliderCtrl.value
 
         onMoved: function(v) {
-          if (hs.integer) hs.liveVal = Math.round(v)
-          else hs.liveVal = Math.round(v * 2) / 2
+          if (hwSliderCtrl.integer) hwSliderCtrl.liveVal = Math.round(v)
+          else hwSliderCtrl.liveVal = Math.round(v * 2) / 2
           root.isDragging = true
           debounceTimer.restart()
         }
         onReleased: function(v) {
           debounceTimer.stop()
           root.isDragging = false
-          if (hs.integer) hs.liveVal = Math.round(v)
-          else hs.liveVal = Math.round(v * 2) / 2
-          hs.pendingVal = hs.liveVal
-          hs.committed(hs.liveVal)
+          if (hwSliderCtrl.integer) hwSliderCtrl.liveVal = Math.round(v)
+          else hwSliderCtrl.liveVal = Math.round(v * 2) / 2
+          hwSliderCtrl.pendingVal = hwSliderCtrl.liveVal
+          hwSliderCtrl.committed(hwSliderCtrl.liveVal)
         }
       }
     }
