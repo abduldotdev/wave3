@@ -1126,8 +1126,8 @@ PopupWindow {
           Button {
             text: root.removeArmed ? "Confirm remove" : "Remove setup"
             bordered: true
-            visible: root.setupStatus.setup === "partial" || root.setupStatus.setup === "complete"
-              || root.setupStatus.wireplumber === "installed" || root.setupStatus.service === "installed"
+            visible: root.setupStatus.wireplumber === "installed"
+              || root.setupStatus.service === "installed"
             enabled: !root.setupBusy
             foreground: root.fg
             background: root.bg
