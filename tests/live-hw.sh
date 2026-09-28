@@ -4,6 +4,13 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WAVE3_HW="${WAVE3_HW:-"$SCRIPT_DIR/../bin/wave3-hw"}"
 
+# Never record test values in the user's settings store.
+if [[ -z "${WAVE3_HW_STORE:-}" ]]; then
+  STORE_TMP_DIR="$(mktemp -d)"
+  export WAVE3_HW_STORE="$STORE_TMP_DIR/hw.json"
+  trap 'rm -rf "$STORE_TMP_DIR"' EXIT
+fi
+
 if [[ ! -x "$WAVE3_HW" ]]; then
   echo "live-hw: executable not found: $WAVE3_HW" >&2
   exit 1
