@@ -1,5 +1,5 @@
 [Unit]
-Description=Keep the Elgato Wave:3 as the default microphone
+Description=Keep the Elgato Wave:3 as the default microphone and restore its settings
 After=pipewire-pulse.service wireplumber.service
 
 [Service]

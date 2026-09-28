@@ -52,7 +52,22 @@ case "$1 ${2:-}" in
   # A profile switch recreates the source under a new index unless keep-index.
   "set-card-profile "*) echo "$3" > "$STUB/profile"
     [ -f "$STUB/keep-index" ] || echo $(($(cat "$STUB/srcidx") + 1)) > "$STUB/srcidx" ;;
-  "subscribe ") cat "$STUB/events" ;;
+  "subscribe ")
+    # events-wait: pace lines so each event is handled after the previous
+    # apply has logged and exited. Absent, subscribe stays a single cat.
+    if [ -f "$STUB/events-wait" ]; then
+      for _ in $(seq 1 100); do
+        [ -f "$STUB/watch.err" ] && grep -q '^wave3-watch: apply rc=' "$STUB/watch.err" && break
+        sleep 0.05
+      done
+      sleep 0.25
+      while IFS= read -r line || [ -n "$line" ]; do
+        printf '%s\n' "$line"
+        sleep 0.25
+      done < "$STUB/events"
+    else
+      cat "$STUB/events"
+    fi ;;
   *) echo "stub pactl: unexpected: $*" >&2; exit 2 ;;
 esac
 exit 0
@@ -446,6 +461,164 @@ watch_default "watch: leaves easyeffects_source as the default" easyeffects_sour
 watch_default "watch: re-asserts over an unlisted BOYALINK" "alsa_input.usb-BOYA_BOYALINK-00.mono-fallback" "$SRC"
 watch_default "watch: re-asserts over the physical MX Brio" "$OTHER" "$SRC"
 watch_default "watch: re-asserts over a .monitor" "${SRC}.monitor" "$SRC"
+
+# --- watcher apply (stub WAVE3_HW; never the real device) ---
+cat > "$TMP/fake-hw" <<'EOF'
+#!/bin/bash
+echo "$*" >> "$STUB/hw.argv"
+if [ -f "$STUB/hw-sleep" ]; then
+  sleep "$(cat "$STUB/hw-sleep")"
+fi
+if [ -f "$STUB/hw-err" ]; then
+  cat "$STUB/hw-err" >&2
+fi
+if [ -f "$STUB/hw-out" ]; then
+  cat "$STUB/hw-out"
+fi
+if [ -f "$STUB/hw-rc" ]; then
+  exit "$(cat "$STUB/hw-rc")"
+fi
+exit 0
+EOF
+chmod +x "$TMP/fake-hw"
+
+canned_applied() {
+  cat > "$STUB/hw-out" <<'EOF'
+store=ok
+changed=gain_db,lowcut,gain_lock
+reapplied=
+result=applied
+EOF
+}
+watch_events() {
+  cat > "$STUB/events" <<'EOF'
+Event 'change' on server #0
+Event 'change' on source #61
+Event 'new' on source #70
+Event 'remove' on source #61
+Event 'new' on card #48
+Event 'new' on sink-input #90
+EOF
+}
+
+fresh yes
+: > "$STUB/events"
+: > "$STUB/resets"
+canned_applied
+echo "wave3-hw: apply attempt 0: absent" > "$STUB/hw-err"
+set +e
+WAVE3_HW="$TMP/fake-hw" WAVE3_RESET="$TMP/fake-reset" "$ROOT/bin/wave3-watch" 2>"$TMP/watch.err"
+rc=$?
+set -e
+check "watch apply: one apply at start is apply --settle 2.5 --retries 2" '[ "$(cat "$STUB/hw.argv")" = "apply --settle 2.5 --retries 2" ]'
+check "watch apply: startup still resets once" '[ "$(cat "$STUB/resets")" = "reset --ensure-default" ]'
+check "watch apply: journal line joins stdout and keeps the rc" '[ "$(grep "^wave3-watch: apply rc=" "$TMP/watch.err")" = "wave3-watch: apply rc=0 store=ok changed=gain_db,lowcut,gain_lock reapplied= result=applied" ]'
+check "watch apply: wave3-hw stderr is passed through" 'grep -qx "wave3-hw: apply attempt 0: absent" "$TMP/watch.err"'
+check "watch apply: exactly one apply journal line at start" '[ "$(grep -c "^wave3-watch: apply rc=" "$TMP/watch.err" || true)" -eq 1 ]'
+check "watch apply: subscription end is still exit 1" '[ "$rc" -eq 1 ] && grep -q "subscribe ended" "$TMP/watch.err"'
+
+fresh yes
+watch_events
+: > "$STUB/resets"
+canned_applied
+set +e
+WAVE3_HW="$TMP/fake-hw" WAVE3_RESET="$TMP/fake-reset" "$ROOT/bin/wave3-watch" 2>"$TMP/watch.err"
+rc=$?
+set -e
+check "watch apply: default interval keeps the event fixture to one apply" '[ "$(cat "$STUB/hw.argv")" = "apply --settle 2.5 --retries 2" ]'
+check "watch apply: event fixture still resets three times" '[ "$(cat "$STUB/resets")" = "$(printf "reset --ensure-default\n%.0s" 1 2 3)" ]'
+check "watch apply: rate-limited events log nothing extra" '[ "$(grep -c "^wave3-watch: apply rc=" "$TMP/watch.err" || true)" -eq 1 ]'
+check "watch apply: rate-limited run still exits 1" '[ "$rc" -eq 1 ] && grep -q "subscribe ended" "$TMP/watch.err"'
+
+# Events are paced (events-wait) so the new card arrives after the startup
+# apply has finished. Interval 0 disables only the time window.
+fresh yes
+cat > "$STUB/events" <<'EOF'
+Event 'change' on server #0
+Event 'change' on source #61
+Event 'remove' on source #61
+Event 'new' on card #48
+Event 'new' on sink-input #90
+EOF
+: > "$STUB/resets"
+: > "$STUB/watch.err"
+touch "$STUB/events-wait"
+canned_applied
+set +e
+WAVE3_HW="$TMP/fake-hw" WAVE3_RESET="$TMP/fake-reset" WAVE3_APPLY_INTERVAL=0 \
+  "$ROOT/bin/wave3-watch" 2>"$STUB/watch.err"
+rc=$?
+set -e
+check "watch apply: interval 0 runs a second apply for a later new card" '[ "$(wc -l < "$STUB/hw.argv")" -eq 2 ]'
+check "watch apply: both applies use settle and retries" '[ "$(sort -u "$STUB/hw.argv")" = "apply --settle 2.5 --retries 2" ]'
+check "watch apply: change and remove do not apply" '[ "$(grep -c "^wave3-watch: apply rc=" "$STUB/watch.err" || true)" -eq 2 ]'
+check "watch apply: interval 0 resets at start and on the new card only" '[ "$(cat "$STUB/resets")" = "$(printf "reset --ensure-default\n%.0s" 1 2)" ]'
+check "watch apply: interval 0 still exits when the subscription ends" '[ "$rc" -eq 1 ] && grep -q "subscribe ended" "$STUB/watch.err"'
+
+# A slow apply must not delay resets, and events during it are dropped.
+fresh yes
+watch_events
+: > "$STUB/resets"
+echo 1.5 > "$STUB/hw-sleep"
+canned_applied
+set +e
+WAVE3_HW="$TMP/fake-hw" WAVE3_RESET="$TMP/fake-reset" "$ROOT/bin/wave3-watch" 2>"$TMP/watch.err" &
+wpid=$!
+ready=0
+for _ in $(seq 1 40); do
+  n=0
+  [ -f "$STUB/resets" ] && n=$(wc -l < "$STUB/resets")
+  if [ "$n" -eq 3 ]; then ready=1; break; fi
+  sleep 0.05
+done
+logged=$(grep -c '^wave3-watch: apply rc=' "$TMP/watch.err" || true)
+exited=0
+for _ in $(seq 1 40); do
+  if ! kill -0 "$wpid" 2>/dev/null; then exited=1; break; fi
+  sleep 0.1
+done
+if [ "$exited" -eq 1 ]; then
+  wait "$wpid"
+  rc=$?
+else
+  kill -KILL "$wpid" 2>/dev/null || true
+  wait "$wpid" 2>/dev/null || true
+  rc=99
+fi
+set -e
+check "watch apply: resets finish while apply is still running" '[ "$ready" -eq 1 ] && [ "$logged" -eq 0 ]'
+check "watch apply: an in-flight apply is not queued for later events" '[ "$(wc -l < "$STUB/hw.argv")" -eq 1 ]'
+check "watch apply: slow apply still exits 1 after subscribe ends" '[ "$rc" -eq 1 ] && grep -q "subscribe ended" "$TMP/watch.err"'
+check "watch apply: slow apply logs once it finishes" '[ "$(grep -c "^wave3-watch: apply rc=" "$TMP/watch.err" || true)" -eq 1 ]'
+
+watch_apply_survives() { # watch_apply_survives <label> <rc|missing>
+  local label="$1" code="$2" hw
+  fresh yes
+  watch_events
+  : > "$STUB/resets"
+  if [ "$code" = missing ]; then
+    hw="$TMP/no-such-wave3-hw"
+  else
+    hw="$TMP/fake-hw"
+    echo "$code" > "$STUB/hw-rc"
+    printf '%s\n' 'store=ok' 'changed=' 'reapplied=' 'result=error' > "$STUB/hw-out"
+  fi
+  set +e
+  WAVE3_HW="$hw" WAVE3_RESET="$TMP/fake-reset" "$ROOT/bin/wave3-watch" 2>"$TMP/watch.err"
+  rc=$?
+  set -e
+  check "watch apply: $label still resets three times" '[ "$(cat "$STUB/resets")" = "$(printf "reset --ensure-default\n%.0s" 1 2 3)" ]'
+  check "watch apply: $label exits because subscribe ended" '[ "$rc" -eq 1 ] && grep -q "subscribe ended" "$TMP/watch.err"'
+  if [ "$code" = missing ]; then
+    check "watch apply: $label logs rc=127" 'grep -qx "wave3-watch: apply rc=127" "$TMP/watch.err"'
+  else
+    check "watch apply: $label logs the failing rc" "grep -qx 'wave3-watch: apply rc=$code store=ok changed= reapplied= result=error' '$TMP/watch.err'"
+  fi
+  check "watch apply: $label logs one apply line" '[ "$(grep -c "^wave3-watch: apply rc=" "$TMP/watch.err" || true)" -eq 1 ]'
+}
+watch_apply_survives "exit 3" 3
+watch_apply_survives "exit 1" 1
+watch_apply_survives "missing hw" missing
 
 [ "$fails" -eq 0 ] || { echo "$fails test(s) failed"; exit 1; }
 echo "all script tests passed"
