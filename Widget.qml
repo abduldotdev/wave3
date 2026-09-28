@@ -9,9 +9,12 @@ BarWidget {
   // Run the plugin's own copy so the widget works without ~/.local/bin links.
   readonly property string resetScript: Qt.resolvedUrl("bin/wave3-reset").toString().replace(/^file:\/\//, "")
   readonly property string meterScript: Qt.resolvedUrl("bin/wave3-meter").toString().replace(/^file:\/\//, "")
+  readonly property string hwScript: Qt.resolvedUrl("bin/wave3-hw").toString().replace(/^file:\/\//, "")
 
   property var status: Model.parseStatus("")
-  readonly property string level: Model.statusLevel(root.status)
+  property var hwStatus: Model.parseHwStatus("")
+  readonly property bool isMuted: Model.isMuted(root.status, root.hwStatus)
+  readonly property string level: Model.statusLevel(root.status, root.hwStatus)
   property bool resetting: false
   property string errorText: ""
   // A read asked for while one is running; it may predate a set, so run again.
@@ -20,6 +23,7 @@ BarWidget {
 
   // Set commands waiting for setProc, keyed by control; the latest value wins.
   property var pendingSets: ({})
+  property var pendingHwSets: ({})
 
   // Meter state, only meaningful while the popup is open.
   property bool meterAvailable: true
@@ -31,8 +35,11 @@ BarWidget {
   implicitHeight: button.implicitHeight
 
   function refresh() {
-    if (statusProc.running) root.refreshAgain = true
-    else statusProc.running = true
+    if (statusProc.running || hwStatusProc.running) root.refreshAgain = true
+    else {
+      statusProc.running = true
+      hwStatusProc.running = true
+    }
   }
 
   function runReset(args) {
@@ -84,6 +91,27 @@ BarWidget {
     refresh()
   }
 
+  // Queues a hardware set command for bin/wave3-hw set <field> <value>.
+  function queueHwSet(field, value) {
+    var cmd = Model.hwSetCommand(root.hwScript, field, value)
+    if (!cmd) return
+    var pending = root.pendingHwSets
+    pending[field] = cmd
+    root.pendingHwSets = pending
+    pumpHwSets()
+  }
+
+  function pumpHwSets() {
+    if (hwSetProc.running) return
+    for (var field in root.pendingHwSets) {
+      hwSetProc.command = root.pendingHwSets[field]
+      delete root.pendingHwSets[field]
+      hwSetProc.running = true
+      return
+    }
+    refresh()
+  }
+
   IpcHandler {
     target: "abduldotdev.wave3"
 
@@ -108,9 +136,30 @@ BarWidget {
       }
     }
     onExited: {
-      if (!root.refreshAgain) return
-      root.refreshAgain = false
-      statusProc.running = true
+      if (root.refreshAgain && !hwStatusProc.running) {
+        root.refreshAgain = false
+        statusProc.running = true
+        hwStatusProc.running = true
+      }
+    }
+  }
+
+  Process {
+    id: hwStatusProc
+    command: [root.hwScript, "status"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.hwStatus = Model.parseHwStatus(text)
+        root.statusSerial++
+      }
+    }
+    onExited: {
+      if (root.refreshAgain && !statusProc.running) {
+        root.refreshAgain = false
+        statusProc.running = true
+        hwStatusProc.running = true
+      }
     }
   }
 
@@ -137,6 +186,21 @@ BarWidget {
         errorTimer.restart()
       }
       root.pumpSets()
+    }
+  }
+
+  Process {
+    id: hwSetProc
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (text.trim()) root.errorText = text.trim().split("\n").pop()
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        if (!root.errorText) root.errorText = "Could not apply hardware setting"
+        errorTimer.restart()
+      }
+      root.pumpHwSets()
     }
   }
 
@@ -184,11 +248,11 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.status.muted ? "󰍭" : "󰍬"
+    text: root.isMuted ? "󰍭" : "󰍬"
     dimmed: root.level === "absent"
     active: root.level === "warn" || root.errorText !== ""
     tooltipText: root.resetting ? "Resetting Wave:3…"
-      : (root.errorText !== "" ? root.errorText : Model.statusSummary(root.status))
+      : (root.errorText !== "" ? root.errorText : Model.statusSummary(root.status, root.hwStatus))
     onPressed: function(b) {
       if (b === Qt.RightButton) root.reset()
       else root.toggle()
@@ -202,18 +266,20 @@ BarWidget {
     bar: root.bar
     owner: root
     status: root.status
+    hwStatus: root.hwStatus
     statusSerial: root.statusSerial
     level: root.meterLevel
     holdLevel: root.meterHold ? root.meterHold.value : 0
     levelText: root.meterText
     meterAvailable: root.meterAvailable
-    busy: setProc.running
+    busy: setProc.running || hwSetProc.running
     errorText: root.errorText
     resetting: root.resetting
     onSourceVolumeRequested: function(percent) { root.queueSet("srcVol", Model.setSourceVolumeCommand(root.status, percent)) }
     onSourceMuteRequested: function(muted) { root.queueSet("srcMute", Model.setSourceMuteCommand(root.status, muted)) }
     onSinkVolumeRequested: function(percent) { root.queueSet("sinkVol", Model.setSinkVolumeCommand(root.status, percent)) }
     onSinkMuteRequested: function(muted) { root.queueSet("sinkMute", Model.setSinkMuteCommand(root.status, muted)) }
+    onHwSetRequested: function(field, value) { root.queueHwSet(field, value) }
     onSetDefaultRequested: root.setDefault()
     onResetRequested: root.reset()
     // An outside click closes the popup directly; clear the meter state too.

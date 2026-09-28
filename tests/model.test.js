@@ -217,3 +217,168 @@ test("meterRunning needs the popup open and shown, the mic and the meter", () =>
   assert.equal(Model.meterRunning(true, true, true, false), false)
   assert.equal(Model.meterRunning(true, true, undefined, true), false)
 })
+
+test("parseStatus reads default_virtual key", () => {
+  const virt = Model.parseStatus(OK + "default_virtual=yes\n")
+  assert.equal(virt.isDefaultVirtual, true)
+  const nonVirt = Model.parseStatus(OK + "default_virtual=no\n")
+  assert.equal(nonVirt.isDefaultVirtual, false)
+  const defaultAbsent = Model.parseStatus(OK)
+  assert.equal(defaultAbsent.isDefaultVirtual, false)
+})
+
+const HW_OK = `present=yes
+access=ok
+device=/dev/bus/usb/001/003
+api=5.3
+supported=yes
+gain_db=10.0
+mute=0
+clipguard=1
+lowcut=1
+hp_db=-20.5
+hp_mute=0
+direct_monitor=0
+volume_select=1
+leds_off=0
+leds_flip=0
+gain_lock=1
+raw=00 0a 00 ec 00 01 01 80 eb 00 00 00 01 00 00 01
+`
+
+test("parseHwStatus reads the live block decoded fixture", () => {
+  const s = Model.parseHwStatus(HW_OK)
+  assert.equal(s.present, true)
+  assert.equal(s.access, "ok")
+  assert.equal(s.device, "/dev/bus/usb/001/003")
+  assert.equal(s.api, "5.3")
+  assert.equal(s.supported, true)
+  assert.equal(s.hwReady, true)
+  assert.equal(s.gainDb, 10.0)
+  assert.equal(s.mute, false)
+  assert.equal(s.clipguard, true)
+  assert.equal(s.lowcut, true)
+  assert.equal(s.hpDb, -20.5)
+  assert.equal(s.hpMute, false)
+  assert.equal(s.directMonitor, 0)
+  assert.equal(s.volumeSelect, 1)
+  assert.equal(s.ledsOff, false)
+  assert.equal(s.ledsFlip, false)
+  assert.equal(s.gainLock, true)
+  assert.equal(s.raw, "00 0a 00 ec 00 01 01 80 eb 00 00 00 01 00 00 01")
+})
+
+test("parseHwStatus treats empty, garbage and absent output as absent shape", () => {
+  for (const text of ["", undefined, "garbage\n=x\n", "present=no\n"]) {
+    const s = Model.parseHwStatus(text)
+    assert.equal(s.present, false)
+    assert.equal(s.access, "")
+    assert.equal(s.device, "")
+    assert.equal(s.api, "")
+    assert.equal(s.supported, false)
+    assert.equal(s.hwReady, false)
+    assert.equal(s.gainDb, 0)
+    assert.equal(s.mute, false)
+    assert.equal(s.clipguard, false)
+    assert.equal(s.lowcut, false)
+  }
+})
+
+test("parseHwStatus handles permission denied and unsupported api", () => {
+  const denied = Model.parseHwStatus(`present=yes
+access=denied
+device=/dev/bus/usb/001/003
+api=
+supported=no
+`)
+  assert.equal(denied.present, true)
+  assert.equal(denied.access, "denied")
+  assert.equal(denied.supported, false)
+  assert.equal(denied.hwReady, false)
+
+  const unsupported = Model.parseHwStatus(`present=yes
+access=ok
+device=/dev/bus/usb/001/003
+api=4.1
+supported=no
+`)
+  assert.equal(unsupported.present, true)
+  assert.equal(unsupported.access, "ok")
+  assert.equal(unsupported.supported, false)
+  assert.equal(unsupported.hwReady, false)
+})
+
+test("hwSetCommand builds command for valid fields and rejects unknown/reserved", () => {
+  const script = "/opt/plugins/bin/wave3-hw"
+  assert.deepEqual(Model.hwSetCommand(script, "gain_db", 10.5), [script, "set", "gain_db", "10.5"])
+  assert.deepEqual(Model.hwSetCommand(script, "gainDb", 10.5), [script, "set", "gain_db", "10.5"])
+  assert.deepEqual(Model.hwSetCommand(script, "mute", true), [script, "set", "mute", "true"])
+  assert.deepEqual(Model.hwSetCommand(script, "clipguard", 1), [script, "set", "clipguard", "1"])
+  assert.deepEqual(Model.hwSetCommand(script, "lowcut", 0), [script, "set", "lowcut", "0"])
+  assert.deepEqual(Model.hwSetCommand(script, "hp_db", -15.5), [script, "set", "hp_db", "-15.5"])
+  assert.deepEqual(Model.hwSetCommand(script, "hpDb", -15.5), [script, "set", "hp_db", "-15.5"])
+  assert.deepEqual(Model.hwSetCommand(script, "hp_mute", false), [script, "set", "hp_mute", "false"])
+  assert.deepEqual(Model.hwSetCommand(script, "direct_monitor", 50), [script, "set", "direct_monitor", "50"])
+  assert.deepEqual(Model.hwSetCommand(script, "volume_select", 2), [script, "set", "volume_select", "2"])
+  assert.deepEqual(Model.hwSetCommand(script, "leds_off", 1), [script, "set", "leds_off", "1"])
+  assert.deepEqual(Model.hwSetCommand(script, "leds_flip", 1), [script, "set", "leds_flip", "1"])
+  assert.deepEqual(Model.hwSetCommand(script, "gain_lock", 1), [script, "set", "gain_lock", "1"])
+
+  // Unknown, reserved or missing
+  assert.equal(Model.hwSetCommand(script, "reserved", 1), null)
+  assert.equal(Model.hwSetCommand(script, "unknown", 1), null)
+  assert.equal(Model.hwSetCommand("", "gain_db", 10), null)
+  assert.equal(Model.hwSetCommand(null, "gain_db", 10), null)
+})
+
+test("quantizers clamp and round correctly", () => {
+  // Gain: 0..40, step 0.5
+  assert.equal(Model.quantizeGain(-5), 0)
+  assert.equal(Model.quantizeGain(45), 40)
+  assert.equal(Model.quantizeGain(10.2), 10.0)
+  assert.equal(Model.quantizeGain(10.3), 10.5)
+  assert.equal(Model.quantizeGain(10.7), 10.5)
+  assert.equal(Model.quantizeGain(10.8), 11.0)
+  assert.equal(Model.quantizeGain("abc"), 0)
+
+  // Headphone: -60..0, step 0.5
+  assert.equal(Model.quantizeHp(-70), -60)
+  assert.equal(Model.quantizeHp(5), 0)
+  assert.equal(Model.quantizeHp(-20.2), -20.0)
+  assert.equal(Model.quantizeHp(-20.3), -20.5)
+  assert.equal(Model.quantizeHp("abc"), -60)
+
+  // Direct monitor: 0..100, step 5
+  assert.equal(Model.quantizeDirectMonitor(-10), 0)
+  assert.equal(Model.quantizeDirectMonitor(110), 100)
+  assert.equal(Model.quantizeDirectMonitor(3), 5)
+  assert.equal(Model.quantizeDirectMonitor(2), 0)
+  assert.equal(Model.quantizeDirectMonitor(47), 45)
+  assert.equal(Model.quantizeDirectMonitor(48), 50)
+  assert.equal(Model.quantizeDirectMonitor("abc"), 0)
+})
+
+test("icon-state and mute logic with hardware and virtual default", () => {
+  const hwOk = Model.parseHwStatus(HW_OK)
+  const hwMuted = Model.parseHwStatus(HW_OK.replace("mute=0", "mute=1"))
+  const baseStatus = Model.parseStatus(OK)
+
+  // isMuted checks pactl or hw
+  assert.equal(Model.isMuted(baseStatus, hwOk), false)
+  assert.equal(Model.isMuted(baseStatus, hwMuted), true)
+  assert.equal(Model.isMuted(Model.parseStatus(OK.replace("muted=no", "muted=yes")), hwOk), true)
+
+  // Not default, but virtual default suppresses warning
+  const notDefault = Model.parseStatus(OK.replace("default=yes", "default=no"))
+  assert.equal(Model.statusLevel(notDefault, hwOk), "warn")
+
+  const virtDefault = Model.parseStatus(OK.replace("default=yes", "default=no") + "default_virtual=yes\n")
+  assert.equal(Model.statusLevel(virtDefault, hwOk), "ok")
+  // But muted still warns
+  assert.equal(Model.statusLevel(virtDefault, hwMuted), "warn")
+
+  // State line mentions filter/virtual source
+  assert.match(Model.headerLine(virtDefault), /filter source default \(e\.g\. EasyEffects\)/)
+  assert.match(Model.statusSummary(virtDefault), /filter source default/)
+})
+
