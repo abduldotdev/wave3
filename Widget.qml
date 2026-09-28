@@ -222,7 +222,10 @@ BarWidget {
     }
     stderr: StdioCollector {
       waitForEnd: true
-      onStreamFinished: if (text.trim()) root.errorText = text.trim().split("\n").pop()
+      onStreamFinished: if (text.trim()) {
+        root.errorText = text.trim().split("\n").pop()
+        errorTimer.restart()
+      }
     }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
