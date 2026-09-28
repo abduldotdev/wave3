@@ -1,0 +1,11 @@
+[Unit]
+Description=Keep the Elgato Wave:3 as the default microphone
+After=pipewire-pulse.service wireplumber.service
+
+[Service]
+ExecStart=%h/.local/bin/wave3-watch
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

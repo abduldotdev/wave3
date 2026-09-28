@@ -1,0 +1,93 @@
+#!/bin/bash
+# Reopen the Elgato Wave:3 input and make it the unmuted default source.
+#
+#   wave3-reset                 toggle the card profile to digital and back
+#                               (wakes a stuck input), then set default + unmute
+#   wave3-reset --default-only  set default + unmute only (no profile toggle)
+#   wave3-reset --status        print key=value lines for the bar widget
+#
+# The card and source are found by name pattern, never by serial or id.
+set -euo pipefail
+
+CARD_PATTERN='^alsa_card[.]usb-Elgato_Systems_Elgato_Wave_3'
+SOURCE_PATTERN='^alsa_input[.]usb-Elgato_Systems_Elgato_Wave_3'
+ANALOG_PROFILE="output:analog-stereo+input:mono-fallback"
+DIGITAL_PROFILE="output:iec958-stereo+input:mono-fallback"
+# Polls of 0.2 s while waiting for the source to come back after a switch.
+WAIT_TRIES="${WAVE3_WAIT_TRIES:-25}"
+
+die() { echo "wave3-reset: $*" >&2; exit 1; }
+
+# awk reads to the end: exiting early would SIGPIPE pactl and trip pipefail.
+find_card() {
+  pactl list short cards | awk -v p="$CARD_PATTERN" '!found && $2 ~ p { print $2; found = 1 }'
+}
+
+# Prints "<name> <state>" for the Wave:3 input source.
+find_source() {
+  pactl list short sources | awk -v p="$SOURCE_PATTERN" '!found && $2 ~ p { print $2, $NF; found = 1 }'
+}
+
+active_profile() { # active_profile <card>
+  pactl list cards | awk -v c="$1" '
+    $1 == "Name:" { in_card = ($2 == c) }
+    in_card && /^[[:space:]]*Active Profile:/ { print $3 }'
+}
+
+wait_for_source() {
+  local i
+  for ((i = 0; i < WAIT_TRIES; i++)); do
+    [ -n "$(find_source)" ] && return 0
+    sleep 0.2
+  done
+  die "Wave:3 source did not come back after switching profile"
+}
+
+set_default() { # set_default <source>
+  [ "$(pactl get-default-source)" = "$1" ] || pactl set-default-source "$1"
+  [ "$(pactl get-source-mute "$1")" = "Mute: no" ] || pactl set-source-mute "$1" 0
+}
+
+status() {
+  local card src name state
+  card="$(find_card)"
+  src="$(find_source)"
+  if [ -z "$src" ]; then
+    echo "present=no"
+    echo "default=no"
+    echo "muted=no"
+    echo "state=absent"
+    echo "profile=$( [ -n "$card" ] && active_profile "$card" )"
+    return 0
+  fi
+  name="${src% *}"
+  state="${src##* }"
+  echo "present=yes"
+  echo "default=$( [ "$(pactl get-default-source)" = "$name" ] && echo yes || echo no )"
+  echo "muted=$( [ "$(pactl get-source-mute "$name")" = "Mute: yes" ] && echo yes || echo no )"
+  echo "state=$state"
+  echo "profile=$( [ -n "$card" ] && active_profile "$card" )"
+  echo "source=$name"
+}
+
+mode="${1:-}"
+case "$mode" in
+  --status) status; exit 0 ;;
+  ""|--default-only) ;;
+  *) die "unknown option: $mode (use --status or --default-only)" ;;
+esac
+
+card="$(find_card)"
+[ -n "$card" ] || die "Elgato Wave:3 not found (is it plugged in?)"
+
+if [ "$mode" != "--default-only" ]; then
+  pactl set-card-profile "$card" "$DIGITAL_PROFILE"
+  wait_for_source
+  pactl set-card-profile "$card" "$ANALOG_PROFILE"
+  wait_for_source
+fi
+
+src="$(find_source)"
+[ -n "$src" ] || die "Elgato Wave:3 input source not found (card $card, profile $(active_profile "$card"))"
+set_default "${src% *}"
+echo "wave3-reset: ${src% *} is the default source"
