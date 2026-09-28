@@ -105,9 +105,9 @@ BarWidget {
   }
 
   function close() {
-    var wasOpen = popup.open
     popup.open = false
-    if (wasOpen && root.barId) BarPoll.setPopupOpen(root.barId, false)
+    // onOpenChanged calls this after open is already false, so always release.
+    if (root.barId) BarPoll.setPopupOpen(root.barId, false)
     root.meterLevel = 0
     root.meterHold = null
     root.meterText = Model.formatDb(-Infinity)

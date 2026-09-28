@@ -266,12 +266,17 @@ cmd_keep_default() {
       ;;
   esac
 
+  # Follow a dotfiles symlink so mv updates the target instead of replacing the link.
+  CFG_FILE="$(readlink -f "$CFG_FILE" 2>/dev/null || echo "$CFG_FILE")"
+
   local cfg_dir
   cfg_dir="$(dirname "$CFG_FILE")"
   mkdir -p "$cfg_dir"
 
-  local tmp_file
+  # Not local: the EXIT trap runs after this function returns, and set -u
+  # would otherwise see an unset variable and leave the temp file behind.
   tmp_file="$(mktemp "$cfg_dir/config.XXXXXX")"
+  trap 'rm -f "$tmp_file"' EXIT
 
   local replaced=0
   if [[ -f "$CFG_FILE" ]]; then

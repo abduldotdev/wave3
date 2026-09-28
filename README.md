@@ -121,7 +121,7 @@ Pick the Wave:3 as EasyEffects' input, then select `easyeffects_source` as the d
 omarchy plugin add https://github.com/abduldotdev/wave3 --enable
 ```
 
-The bar icon works immediately: status, left-click popup, right-click reset, and the pactl fallback when the USB control node is not readable. Nothing under your home directory is written by this plugin until you opt in below. (`omarchy plugin add` itself creates the plugin folder.)
+The bar icon works immediately: status, left-click popup, right-click reset, and the pactl fallback when the USB control node is not readable. Nothing is written under your home directory until you use a control: Set up writes the drop-in and unit, the keep-default toggle writes `~/.config/abduldotdev.wave3/config`, and hardware changes are remembered in `~/.local/state/abduldotdev.wave3/hw.json`. (`omarchy plugin add` itself creates the plugin folder.)
 
 Open the popup and use **SETUP**, or run the same steps from a terminal. The script is `~/.config/omarchy/plugins/abduldotdev.wave3/bin/wave3-setup`. It never runs sudo, never restarts PipeWire or WirePlumber, and never changes volumes or the default source.
 

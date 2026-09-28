@@ -8,7 +8,10 @@ ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd -P)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# Isolated HOME and XDG_CONFIG_HOME
+# Isolated HOME and XDG_CONFIG_HOME.
+# scripts.test.sh exports WAVE3_CONFIG at a missing path for the watcher.
+# This suite must use the temporary XDG config instead.
+unset WAVE3_CONFIG
 export HOME="$TMP/home"
 export XDG_CONFIG_HOME="$TMP/home/.config"
 mkdir -p "$HOME" "$XDG_CONFIG_HOME"
@@ -332,6 +335,36 @@ check "status: reflects keep_default=yes" 'printf "%s\n" "$out" | grep -qx "keep
 "$SETUP" keep-default off >/dev/null
 out="$("$SETUP" status)"
 check "status: reflects keep_default=no" 'printf "%s\n" "$out" | grep -qx "keep_default=no"'
+
+# Symlinked config is updated in place, not replaced by a regular file.
+rm -f "$CFG_FILE"
+real_cfg="$TMP/dotfiles/abduldotdev.wave3/config"
+mkdir -p "$(dirname "$real_cfg")" "$(dirname "$CFG_FILE")"
+cat > "$real_cfg" <<EOF
+# Leading comment
+unrelated_key=123
+keep_default=no
+EOF
+ln -s "$real_cfg" "$CFG_FILE"
+out="$("$SETUP" keep-default on)"
+check "keep-default: symlinked config stays a symlink" '[ -L "$CFG_FILE" ] && [ "$(readlink "$CFG_FILE")" = "$real_cfg" ]'
+check "keep-default: symlinked config writes the target" '[ "$out" = "keep_default=yes" ] && grep -qx "keep_default=yes" "$real_cfg" && grep -qx "# Leading comment" "$real_cfg" && grep -qx "unrelated_key=123" "$real_cfg"'
+check "keep-default: symlinked config leaves no temp file" '[ -z "$(find "$(dirname "$real_cfg")" "$(dirname "$CFG_FILE")" -name "config.??????" -print 2>/dev/null)" ]'
+
+# A failure after mktemp must not leave config.XXXXXX behind.
+rm -f "$CFG_FILE"
+mkdir -p "$(dirname "$CFG_FILE")"
+printf 'keep_default=no\n' > "$CFG_FILE"
+chmod 000 "$CFG_FILE"
+set +e
+"$SETUP" keep-default off >/dev/null 2>"$TMP/keep-fail.err"
+rc=$?
+set -e
+chmod 600 "$CFG_FILE" 2>/dev/null || true
+check "keep-default: unreadable config exits non-zero" '[ "$rc" -ne 0 ]'
+check "keep-default: unreadable config removes the temp file" '[ -z "$(find "$(dirname "$CFG_FILE")" -name "config.??????" -print 2>/dev/null)" ]'
+check "keep-default: unreadable config leaves the original file" 'grep -qx "keep_default=no" "$CFG_FILE"'
+rm -f "$CFG_FILE"
 
 # --- 13. Systemctl error during install ---
 touch "$SYSTEMCTL_STATE/fail-enable"

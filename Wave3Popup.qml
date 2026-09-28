@@ -308,7 +308,7 @@ PopupWindow {
     Text {
       id: stateText
       text: setupRow.mark
-      color: setupRow.mark === "ok" ? root.accent : root.urgent
+      color: setupRow.mark === "ok" ? root.safeMuted : root.urgent
       font.family: root.fontFamily
       font.pixelSize: 11
       anchors.verticalCenter: parent.verticalCenter
@@ -588,9 +588,12 @@ PopupWindow {
 
       // Header
       Row {
+        id: headerRow
+        width: parent.width
         spacing: 8
 
         Text {
+          id: headerIcon
           text: (root.status.muted || (root.hwReady && root.hwStatus.mute)) ? "󰍭" : "󰍬"
           color: root.status.present ? root.accent : root.safeMuted
           font.family: root.fontFamily
@@ -599,10 +602,13 @@ PopupWindow {
         }
 
         Column {
+          width: parent.width - headerIcon.implicitWidth - headerRow.spacing
           spacing: 1
           anchors.verticalCenter: parent.verticalCenter
 
           Text {
+            width: parent.width
+            elide: Text.ElideRight
             text: "Elgato Wave:3"
             color: root.fg
             font.family: root.fontFamily
@@ -611,6 +617,8 @@ PopupWindow {
           }
 
           Text {
+            width: parent.width
+            elide: Text.ElideRight
             text: Model.headerLine(root.status)
             color: root.status.present ? root.safeMuted : root.urgent
             font.family: root.fontFamily
@@ -1120,7 +1128,6 @@ PopupWindow {
             bordered: true
             visible: root.setupStatus.setup === "partial" || root.setupStatus.setup === "complete"
               || root.setupStatus.wireplumber === "installed" || root.setupStatus.service === "installed"
-              || root.setupStatus.udev === "installed"
             enabled: !root.setupBusy
             foreground: root.fg
             background: root.bg

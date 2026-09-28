@@ -18,6 +18,8 @@ exit 0
 EOF
 chmod +x "$TMP/wave3-hw-noop"
 export WAVE3_HW="$TMP/wave3-hw-noop"
+# Missing file, so keep_default stays yes. Watcher cases must not read ~/.config.
+export WAVE3_CONFIG="$TMP/no-config"
 
 CARD="alsa_card.usb-Elgato_Systems_Elgato_Wave_3_TEST123-00"
 SRC="alsa_input.usb-Elgato_Systems_Elgato_Wave_3_TEST123-00.mono-fallback"
