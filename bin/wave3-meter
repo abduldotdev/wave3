@@ -31,17 +31,20 @@ if [ -z "$name" ]; then
 fi
 
 # Background subshell so a trap can run while the pipeline is still going.
-# $! is that subshell; its children are parec, od and awk.
+# Job control puts it in its own process group with parec, od and awk, so one
+# group kill reaches all of them, even ones forked while the trap runs. $! is
+# read in the trap too, for a signal landing before child= is assigned.
 child=""
 cleanup() {
+  child="${child:-${!:-}}"
   if [ -n "$child" ]; then
-    pkill -TERM -P "$child" 2>/dev/null || true
-    kill "$child" 2>/dev/null || true
+    kill -TERM -- "-$child" 2>/dev/null || true
   fi
   wait 2>/dev/null || true
   exit 0
 }
 trap cleanup TERM INT
+set -m
 
 (
   parec --raw --format=s16le --channels=1 --rate=8000 --latency-msec=100 \

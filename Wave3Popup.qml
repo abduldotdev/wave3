@@ -66,6 +66,10 @@ PopupWindow {
     else if (bar.activePopout === coordinatorKey) bar.releasePopout(coordinatorKey)
   }
 
+  // The compositor can dismiss the popup, or unmap the bar under it, without
+  // touching open. Close for real so the widget stops the meter.
+  onVisibleChanged: if (!visible && open) close()
+
   HyprlandFocusGrab {
     active: root.open
     windows: root.anchorWindow ? [root, root.anchorWindow] : [root]

@@ -207,3 +207,13 @@ test("holdPeak holds the highest peak for holdMs", () => {
   hold = Model.holdPeak(hold, 0.1, 1600, 1500)
   assert.deepEqual(hold, { value: 0.1, at: 1600 })
 })
+
+test("meterRunning needs the popup open and shown, the mic and the meter", () => {
+  assert.equal(Model.meterRunning(true, true, true, true), true)
+  // Closed popup, or one hidden while still open, never captures.
+  assert.equal(Model.meterRunning(false, true, true, true), false)
+  assert.equal(Model.meterRunning(true, false, true, true), false)
+  assert.equal(Model.meterRunning(true, true, false, true), false)
+  assert.equal(Model.meterRunning(true, true, true, false), false)
+  assert.equal(Model.meterRunning(true, true, undefined, true), false)
+})

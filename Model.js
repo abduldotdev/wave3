@@ -168,6 +168,13 @@ function holdPeak(hold, peak, now, holdMs) {
   return hold
 }
 
+// Whether the level meter should capture. The popup window can be hidden
+// under it (dismissed by the compositor, or its bar window unmapped) while
+// open stays true, so the meter needs the popup both open and shown.
+function meterRunning(open, shown, present, available) {
+  return open === true && shown === true && present === true && available === true
+}
+
 // Export for Node.js test environment (in QML, top-level functions and vars
 // are directly accessible via import namespace).
 if (typeof module !== "undefined") {
@@ -190,6 +197,7 @@ if (typeof module !== "undefined") {
     parseMeterLine: parseMeterLine,
     formatDb: formatDb,
     meterPosition: meterPosition,
-    holdPeak: holdPeak
+    holdPeak: holdPeak,
+    meterRunning: meterRunning
   }
 }

@@ -143,7 +143,7 @@ BarWidget {
   Process {
     id: meterProc
     command: [root.meterScript]
-    running: popup.open && root.status.present && root.meterAvailable
+    running: Model.meterRunning(popup.open, popup.visible, root.status.present, root.meterAvailable)
     stdout: SplitParser {
       onRead: function(data) {
         var m = Model.parseMeterLine(data)

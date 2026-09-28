@@ -284,6 +284,49 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 check "meter: TERM stops parec within 1s" '[ "$gone" -eq 1 ]'
 
+# Every process under a pid, for checking that a signal leaves none behind.
+descendants() {
+  local kid
+  for kid in $(pgrep -P "$1"); do echo "$kid"; descendants "$kid"; done
+}
+
+# meter_signal <TERM|INT>: once the pipeline runs, the signal must leave no
+# parec, od, awk or subshell behind. env resets SIGINT, which a background job
+# of this script would otherwise inherit as ignored, as quickshell does not.
+meter_signal() {
+  local mpid kids alive
+  fresh yes; touch "$STUB/parec-forever"
+  env --default-signal=INT "$ROOT/bin/wave3-meter" >/dev/null 2>"$TMP/meter.err" &
+  mpid=$!
+  for _ in $(seq 1 20); do
+    pgrep -f "$TMP/bin/parec" >/dev/null && break
+    sleep 0.05
+  done
+  sleep 0.1
+  kids="$(descendants "$mpid")"
+  kill "-$1" "$mpid"
+  set +e; wait "$mpid"; set -e
+  sleep 0.3
+  alive=""
+  for k in $kids; do kill -0 "$k" 2>/dev/null && alive="$alive $k"; done
+  check "meter: $1 leaves no child process ($(echo $kids | wc -w) tracked)" '[ -n "$kids" ] && [ -z "$alive" ]'
+  check "meter: $1 is silent on stderr" '[ ! -s "$TMP/meter.err" ]'
+}
+meter_signal TERM
+meter_signal INT
+
+# A signal right after start, before the pipeline is up, leaves nothing either.
+fresh yes; touch "$STUB/parec-forever"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  "$ROOT/bin/wave3-meter" >/dev/null 2>&1 &
+  mpid=$!
+  sleep "0.0$((RANDOM % 5))"
+  kill -TERM "$mpid"
+  set +e; wait "$mpid"; set -e
+done
+sleep 0.3
+check "meter: early TERM never strands parec" '! pgrep -f "$TMP/bin/parec" >/dev/null'
+
 # --- watcher ---
 cat > "$TMP/fake-reset" <<'EOF'
 #!/bin/bash
