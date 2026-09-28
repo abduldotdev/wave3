@@ -4,6 +4,9 @@
 #   wave3-reset                 toggle the card profile to digital and back
 #                               (wakes a stuck input), then set default + unmute
 #   wave3-reset --default-only  set default + unmute only (no profile toggle)
+#   wave3-reset --ensure-default
+#                               like --default-only, but leave a virtual or
+#                               filter default (EasyEffects) alone
 #   wave3-reset --status        print key=value lines for the bar widget
 #
 # The card and source are found by name pattern, never by serial or id.
@@ -86,6 +89,28 @@ source_name() { # source_name "<index> <name> <state>"
   echo "${rest% *}"
 }
 
+# Current default source name, or empty when pactl cannot answer.
+current_default() {
+  pactl get-default-source 2>/dev/null || true
+}
+
+# yes when <name> is listed in `pactl list short sources` and is a virtual or
+# filter source: not alsa_input.*, not bluez_input.*, not a .monitor.
+# easyeffects_source matches. The Wave:3, a physical input, a monitor, and an
+# unlisted name (the absent BOYALINK) are no.
+default_virtual_value() { # default_virtual_value <name>
+  local def="$1"
+  [ -n "$def" ] || { echo no; return; }
+  case "$def" in
+    alsa_input.*|bluez_input.*|*.monitor) echo no; return ;;
+  esac
+  if pactl list short sources 2>/dev/null | awk -v n="$def" '$2 == n { found = 1 } END { exit (found ? 0 : 1) }'; then
+    echo yes
+  else
+    echo no
+  fi
+}
+
 status() {
   local card src name state sinkline sink vol svol smute smute_line
   # A failing pactl (server down) reads as absent: --status always exits 0.
@@ -108,6 +133,7 @@ status() {
   if [ -z "$src" ]; then
     echo "present=no"
     echo "default=no"
+    echo "default_virtual=$(default_virtual_value "$(current_default)")"
     echo "muted=no"
     echo "state=absent"
     echo "profile=$( [ -n "$card" ] && active_profile "$card" )"
@@ -117,6 +143,7 @@ status() {
     vol="$(pactl get-source-volume "$name" 2>/dev/null | percent)" || vol=""
     echo "present=yes"
     echo "default=$( [ "$(pactl get-default-source)" = "$name" ] && echo yes || echo no )"
+    echo "default_virtual=$(default_virtual_value "$(current_default)")"
     echo "muted=$( [ "$(pactl get-source-mute "$name")" = "Mute: yes" ] && echo yes || echo no )"
     echo "state=$state"
     echo "profile=$( [ -n "$card" ] && active_profile "$card" )"
@@ -131,14 +158,26 @@ status() {
 mode="${1:-}"
 case "$mode" in
   --status) status; exit 0 ;;
-  ""|--default-only) ;;
-  *) die "unknown option: $mode (use --status or --default-only)" ;;
+  ""|--default-only|--ensure-default) ;;
+  *) die "unknown option: $mode (use --status, --default-only or --ensure-default)" ;;
 esac
+
+# A filter source (EasyEffects) is the default on purpose. --default-only and
+# a plain reset still force the Wave:3; only the watcher uses this mode.
+if [ "$mode" = "--ensure-default" ]; then
+  def="$(current_default)"
+  if [ "$(default_virtual_value "$def")" = yes ]; then
+    echo "wave3-reset: $def is a virtual source; leaving it as the default"
+    exit 0
+  fi
+fi
 
 card="$(find_card)" || die "cannot reach the audio server (pactl failed)"
 [ -n "$card" ] || die "Elgato Wave:3 not found (is it plugged in?)"
 
-if [ "$mode" != "--default-only" ]; then
+# --ensure-default is the watcher's --default-only: set the source, do not
+# toggle the profile. Only a plain reset does that.
+if [ -z "$mode" ]; then
   switch_profile "$card" "$DIGITAL_PROFILE"
   switch_profile "$card" "$ANALOG_PROFILE"
 fi
