@@ -17,6 +17,10 @@ PopupWindow {
 
   property var status: Model.parseStatus("")
   property var hwStatus: Model.parseHwStatus("")
+  property var setupStatus: Model.parseSetupStatus("")
+  property string setupMessage: ""
+  property bool setupBusy: false
+  property bool removeArmed: false
   readonly property bool hwReady: Boolean(root.hwStatus && root.hwStatus.hwReady)
   readonly property string udevRulePath: Qt.resolvedUrl("udev/70-elgato-wave3.rules").toString().replace(/^file:\/\//, "")
   readonly property string udevInstallCommand: "sudo install -m644 " + root.udevRulePath + " /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger"
@@ -42,6 +46,31 @@ PopupWindow {
   signal hwSetRequested(string field, var value)
   signal setDefaultRequested()
   signal resetRequested()
+  signal setupInstallRequested()
+  signal setupUninstallRequested()
+  signal keepDefaultRequested(bool keep)
+
+  function watcherState() {
+    var s = root.setupStatus
+    if (!s) return "missing"
+    if (s.service === "installed" && s.serviceEnabled && s.serviceActive) return "ok"
+    if (s.service === "foreign") return "foreign"
+    if (s.service === "installed" && !s.serviceEnabled) return "disabled"
+    if (s.service === "installed") return "inactive"
+    return "missing"
+  }
+
+  function armRemove() {
+    if (root.setupBusy) return
+    if (root.removeArmed) {
+      root.removeArmed = false
+      removeArmTimer.stop()
+      root.setupUninstallRequested()
+      return
+    }
+    root.removeArmed = true
+    removeArmTimer.restart()
+  }
 
   readonly property var coordinatorKey: owner || root
   readonly property var anchorWindow: anchorItem ? anchorItem.QsWindow.window : null
@@ -255,6 +284,34 @@ PopupWindow {
       accent: root.accent
       anchors.verticalCenter: parent.verticalCenter
       onToggled: waveToggleCtrl.toggled()
+    }
+  }
+
+  component SetupRow: Row {
+    id: setupRow
+    property string label: ""
+    property string mark: ""
+
+    width: parent.width
+    spacing: 8
+
+    Text {
+      text: setupRow.label
+      color: root.fg
+      font.family: root.fontFamily
+      font.pixelSize: 12
+      font.bold: true
+      anchors.verticalCenter: parent.verticalCenter
+      width: parent.width - stateText.implicitWidth - setupRow.spacing
+    }
+
+    Text {
+      id: stateText
+      text: setupRow.mark
+      color: setupRow.mark === "ok" ? root.accent : root.urgent
+      font.family: root.fontFamily
+      font.pixelSize: 11
+      anchors.verticalCenter: parent.verticalCenter
     }
   }
 
@@ -970,6 +1027,126 @@ PopupWindow {
         wrapMode: Text.Wrap
         width: parent.width
       }
+
+      // Read on open and after a setup action. Not on the status timer.
+      Column {
+        width: parent.width
+        spacing: 6
+        visible: root.setupStatus && root.setupStatus.known === true
+
+        PanelSeparator {
+          foreground: root.fg
+        }
+
+        PanelSectionHeader {
+          text: "SETUP"
+          foreground: root.fg
+          fontFamily: root.fontFamily
+        }
+
+        SetupRow {
+          label: "WirePlumber rule"
+          mark: root.setupStatus.wireplumber === "installed" ? "ok" : (root.setupStatus.wireplumber || "missing")
+        }
+
+        SetupRow {
+          label: "Watcher service"
+          mark: root.watcherState()
+        }
+
+        SetupRow {
+          label: "Hardware access"
+          mark: root.setupStatus.udev === "installed" ? "ok" : "missing"
+        }
+
+        Text {
+          visible: root.setupStatus.udev === "missing"
+          text: "One step needs sudo. Copy this command; it is not run for you."
+          color: root.safeMuted
+          font.family: root.fontFamily
+          font.pixelSize: 10
+          wrapMode: Text.Wrap
+          width: parent.width
+        }
+
+        Rectangle {
+          visible: root.setupStatus.udev === "missing" && root.setupStatus.udevCommand !== ""
+          width: parent.width
+          implicitHeight: setupCmd.implicitHeight + 8
+          color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
+          radius: Style.cornerRadius
+          border.width: 1
+          border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.3)
+
+          TextEdit {
+            id: setupCmd
+            anchors.fill: parent
+            anchors.margins: 4
+            text: root.setupStatus.udevCommand
+            readOnly: true
+            selectByMouse: true
+            wrapMode: TextEdit.Wrap
+            color: root.fg
+            font.family: root.fontFamily
+            font.pixelSize: 9
+          }
+        }
+
+        WaveToggle {
+          label: "Keep Wave:3 as default mic"
+          checked: root.setupStatus.keepDefault === true
+          controlEnabled: !root.setupBusy
+          onToggled: root.keepDefaultRequested(root.setupStatus.keepDefault !== true)
+        }
+
+        Row {
+          spacing: 8
+
+          Button {
+            text: "Set up"
+            bordered: true
+            visible: root.setupStatus.setup !== "complete"
+            enabled: !root.setupBusy
+            foreground: root.fg
+            background: root.bg
+            accent: root.accent
+            fontFamily: root.fontFamily
+            fontSize: 11
+            onClicked: if (!root.setupBusy) root.setupInstallRequested()
+          }
+
+          Button {
+            text: root.removeArmed ? "Confirm remove" : "Remove setup"
+            bordered: true
+            visible: root.setupStatus.setup === "partial" || root.setupStatus.setup === "complete"
+              || root.setupStatus.wireplumber === "installed" || root.setupStatus.service === "installed"
+              || root.setupStatus.udev === "installed"
+            enabled: !root.setupBusy
+            foreground: root.fg
+            background: root.bg
+            accent: root.accent
+            fontFamily: root.fontFamily
+            fontSize: 10
+            onClicked: root.armRemove()
+          }
+        }
+
+        Text {
+          visible: root.setupMessage !== ""
+          text: root.setupMessage
+          color: root.urgent
+          font.family: root.fontFamily
+          font.pixelSize: 11
+          wrapMode: Text.Wrap
+          width: parent.width
+        }
+      }
     }
+  }
+
+  Timer {
+    id: removeArmTimer
+    interval: 3000
+    onTriggered: root.removeArmed = false
   }
 }

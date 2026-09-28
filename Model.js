@@ -1,5 +1,6 @@
-// Model.js — Pure parsing of wave3-reset --status and wave3-hw status,
-// and pactl commands and PipeWire node helpers, for the bar widget and its popup.
+// Model.js — Pure parsing of wave3-reset --status, wave3-hw status and
+// wave3-setup status, plus pactl commands and PipeWire node helpers, for the
+// bar widget and its popup.
 //
 // Dual-environment module: loadable directly in Quickshell QML via:
 //   import "Model.js" as Model
@@ -52,6 +53,50 @@ function parseStatus(text) {
     else if (key === "sink_muted") status.sinkMuted = value === "yes"
   }
   if (!status.present) status.state = "absent"
+  return status
+}
+
+// Parses bin/wave3-setup status. Empty or unrecognised output is unknown
+// (known: false) so the popup can hide SETUP when the script is not there.
+// A missing keep_default key means yes, matching wave3-setup.
+function parseSetupStatus(text) {
+  var status = {
+    known: false,
+    wireplumber: "",
+    service: "",
+    serviceEnabled: false,
+    serviceActive: false,
+    udev: "",
+    keepDefault: true,
+    setup: "",
+    pluginDir: "",
+    udevCommand: ""
+  }
+  var saw = false
+  var sawKeep = false
+  var lines = String(text || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim()
+    var eq = line.indexOf("=")
+    if (eq <= 0) continue
+    var key = line.slice(0, eq)
+    var value = line.slice(eq + 1)
+    if (key === "wireplumber") { status.wireplumber = value; saw = true }
+    else if (key === "service") { status.service = value; saw = true }
+    else if (key === "service_enabled") { status.serviceEnabled = value === "yes"; saw = true }
+    else if (key === "service_active") { status.serviceActive = value === "yes"; saw = true }
+    else if (key === "udev") { status.udev = value; saw = true }
+    else if (key === "keep_default") {
+      status.keepDefault = value === "yes"
+      sawKeep = true
+      saw = true
+    }
+    else if (key === "setup") { status.setup = value; saw = true }
+    else if (key === "plugin_dir") { status.pluginDir = value; saw = true }
+    else if (key === "udev_command") { status.udevCommand = value; saw = true }
+  }
+  if (!sawKeep) status.keepDefault = true
+  status.known = saw
   return status
 }
 
@@ -413,6 +458,7 @@ function parseHwSetOutput(text) {
 if (typeof module !== "undefined") {
   module.exports = {
     parseStatus: parseStatus,
+    parseSetupStatus: parseSetupStatus,
     parseHwStatus: parseHwStatus,
     mergeHwStatus: mergeHwStatus,
     parseHwSetOutput: parseHwSetOutput,

@@ -558,3 +558,71 @@ test("hwPollDue handles forced, intervals, and backwards wall-clock jumps", () =
   assert.equal(Model.hwPollDue(1000, undefined, false), true)
 })
 
+const SETUP_COMPLETE = `wireplumber=installed
+service=installed
+service_enabled=yes
+service_active=yes
+udev=installed
+keep_default=yes
+setup=complete
+plugin_dir=/home/user/.config/omarchy/plugins/abduldotdev.wave3
+udev_command=sudo install -m644 '/home/user/.config/omarchy/plugins/abduldotdev.wave3/udev/70-elgato-wave3.rules' /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+`
+
+test("parseSetupStatus reads a complete status block", () => {
+  const s = Model.parseSetupStatus(SETUP_COMPLETE)
+  assert.equal(s.known, true)
+  assert.equal(s.wireplumber, "installed")
+  assert.equal(s.service, "installed")
+  assert.equal(s.serviceEnabled, true)
+  assert.equal(s.serviceActive, true)
+  assert.equal(s.udev, "installed")
+  assert.equal(s.keepDefault, true)
+  assert.equal(s.setup, "complete")
+  assert.equal(s.pluginDir, "/home/user/.config/omarchy/plugins/abduldotdev.wave3")
+  assert.match(s.udevCommand, /^sudo install -m644 /)
+  assert.match(s.udevCommand, /udevadm trigger$/)
+})
+
+test("parseSetupStatus treats empty and unrecognised output as unknown", () => {
+  for (const text of ["", undefined, "garbage\n=x\n", "foo=bar\n"]) {
+    const s = Model.parseSetupStatus(text)
+    assert.equal(s.known, false)
+    assert.equal(s.setup, "")
+    assert.equal(s.wireplumber, "")
+    assert.equal(s.udevCommand, "")
+    assert.equal(s.keepDefault, true)
+  }
+})
+
+test("parseSetupStatus keeps partial, foreign and none states", () => {
+  const partial = Model.parseSetupStatus(`wireplumber=foreign
+service=installed
+service_enabled=no
+service_active=no
+udev=missing
+keep_default=no
+setup=partial
+plugin_dir=/tmp/my plugins/wave=3
+udev_command=sudo install -m644 '/tmp/my plugins/wave=3/udev/70-elgato-wave3.rules' /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+`)
+  assert.equal(partial.known, true)
+  assert.equal(partial.wireplumber, "foreign")
+  assert.equal(partial.service, "installed")
+  assert.equal(partial.serviceEnabled, false)
+  assert.equal(partial.serviceActive, false)
+  assert.equal(partial.udev, "missing")
+  assert.equal(partial.keepDefault, false)
+  assert.equal(partial.setup, "partial")
+  assert.equal(partial.pluginDir, "/tmp/my plugins/wave=3")
+  assert.match(partial.udevCommand, /\/tmp\/my plugins\/wave=3\//)
+
+  const none = Model.parseSetupStatus("wireplumber=missing\nservice=missing\nudev=missing\nsetup=none\n")
+  assert.equal(none.known, true)
+  assert.equal(none.setup, "none")
+  assert.equal(none.keepDefault, true)
+  assert.equal(none.serviceEnabled, false)
+  assert.equal(none.udev, "missing")
+})
+
+
