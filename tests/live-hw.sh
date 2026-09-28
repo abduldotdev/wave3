@@ -43,6 +43,9 @@ declare -a CHANGED_STACK=()
 rollback() {
   local failed_field="${1:-}"
   echo "live-hw: mismatch or error on '$failed_field', restoring modified fields..." >&2
+  if [[ -n "$failed_field" && -n "${ORIG[$failed_field]:-}" ]]; then
+    "$WAVE3_HW" set "$failed_field" "${ORIG[$failed_field]}" >/dev/null 2>&1 || true
+  fi
   for (( i=${#CHANGED_STACK[@]}-1; i>=0; i-- )); do
     local f="${CHANGED_STACK[i]}"
     local orig_val="${ORIG[$f]}"
@@ -94,11 +97,13 @@ for field in "${FIELDS[@]}"; do
   esac
   CHANGED["$field"]="$changed"
 
+  # Push field onto CHANGED_STACK before change write so rollback will restore it
+  CHANGED_STACK+=("$field")
+
   # Apply change
   if ! "$WAVE3_HW" set "$field" "$changed" >/dev/null 2>&1; then
     rollback "$field"
   fi
-  CHANGED_STACK+=("$field")
 
   # Read back changed value
   readback_status=$("$WAVE3_HW" status 2>/dev/null) || rollback "$field"
@@ -111,7 +116,6 @@ for field in "${FIELDS[@]}"; do
   if ! "$WAVE3_HW" set "$field" "$orig" >/dev/null 2>&1; then
     rollback "$field"
   fi
-  unset 'CHANGED_STACK[${#CHANGED_STACK[@]}-1]'
 
   # Read back restored value
   readback_status=$("$WAVE3_HW" status 2>/dev/null) || rollback "$field"
@@ -119,6 +123,9 @@ for field in "${FIELDS[@]}"; do
   if [[ "$restored_val" != "$orig" ]]; then
     rollback "$field"
   fi
+
+  # Pop only after verified restored read-back matches original
+  unset 'CHANGED_STACK[-1]'
   RESTORED["$field"]="$restored_val"
 done
 
