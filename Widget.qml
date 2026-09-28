@@ -17,8 +17,11 @@ BarWidget {
   readonly property string level: Model.statusLevel(root.status, root.hwStatus)
   property bool resetting: false
   property string errorText: ""
+  property string savedHint: ""
   // A read asked for while one is running; it may predate a set, so run again.
-  property bool refreshAgain: false
+  property bool statusRefreshAgain: false
+  property bool hwRefreshAgain: false
+  property real lastHwPollTime: 0
   property int statusSerial: 0
 
   // Set commands waiting for setProc, keyed by control; the latest value wins.
@@ -34,12 +37,32 @@ BarWidget {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  function refresh() {
-    if (statusProc.running || hwStatusProc.running) root.refreshAgain = true
-    else {
-      statusProc.running = true
-      hwStatusProc.running = true
+  function hasPendingHwSets() {
+    for (var k in root.pendingHwSets) return true
+    return false
+  }
+
+  function refreshStatus() {
+    if (statusProc.running) root.statusRefreshAgain = true
+    else statusProc.running = true
+  }
+
+  function refreshHw(force) {
+    if (hwSetProc.running || hasPendingHwSets()) return
+    if (!force && !popup.open) {
+      if (Date.now() - root.lastHwPollTime < 30000) return
     }
+    if (hwStatusProc.running) {
+      root.hwRefreshAgain = true
+      return
+    }
+    root.lastHwPollTime = Date.now()
+    hwStatusProc.running = true
+  }
+
+  function refresh(force) {
+    refreshStatus()
+    refreshHw(Boolean(force || popup.open))
   }
 
   function runReset(args) {
@@ -56,7 +79,7 @@ BarWidget {
   function open() {
     root.meterAvailable = true
     popup.open = true
-    refresh()
+    refresh(true)
   }
 
   function close() {
@@ -104,12 +127,13 @@ BarWidget {
   function pumpHwSets() {
     if (hwSetProc.running) return
     for (var field in root.pendingHwSets) {
+      hwSetProc.lastStdout = ""
       hwSetProc.command = root.pendingHwSets[field]
       delete root.pendingHwSets[field]
       hwSetProc.running = true
       return
     }
-    refresh()
+    refresh(true)
   }
 
   IpcHandler {
@@ -136,10 +160,9 @@ BarWidget {
       }
     }
     onExited: {
-      if (root.refreshAgain && !hwStatusProc.running) {
-        root.refreshAgain = false
+      if (root.statusRefreshAgain) {
+        root.statusRefreshAgain = false
         statusProc.running = true
-        hwStatusProc.running = true
       }
     }
   }
@@ -150,15 +173,14 @@ BarWidget {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        root.hwStatus = Model.parseHwStatus(text)
+        root.hwStatus = Model.mergeHwStatus(root.hwStatus, Model.parseHwStatus(text))
         root.statusSerial++
       }
     }
     onExited: {
-      if (root.refreshAgain && !statusProc.running) {
-        root.refreshAgain = false
-        statusProc.running = true
-        hwStatusProc.running = true
+      if (root.hwRefreshAgain) {
+        root.hwRefreshAgain = false
+        root.refreshHw(root.popup.open)
       }
     }
   }
@@ -191,14 +213,33 @@ BarWidget {
 
   Process {
     id: hwSetProc
+    property string lastStdout: ""
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: hwSetProc.lastStdout = text
+    }
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: if (text.trim()) root.errorText = text.trim().split("\n").pop()
     }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
+        root.savedHint = ""
         if (!root.errorText) root.errorText = "Could not apply hardware setting"
         errorTimer.restart()
+      } else {
+        var res = Model.parseHwSetOutput(hwSetProc.lastStdout)
+        if (res.saved === "yes") {
+          root.errorText = ""
+          root.savedHint = Model.SAVED_HINT
+          savedHintTimer.restart()
+        } else if (res.saved === "error") {
+          root.savedHint = ""
+          root.errorText = "Changed, but could not save it for reconnect"
+          errorTimer.restart()
+        } else {
+          root.errorText = ""
+        }
       }
       root.pumpHwSets()
     }
@@ -221,6 +262,12 @@ BarWidget {
       if (exitCode !== 0 && popup.open) root.meterAvailable = false
       root.meterLevel = 0
     }
+  }
+
+  Timer {
+    id: savedHintTimer
+    interval: 4000
+    onTriggered: root.savedHint = ""
   }
 
   Timer {
@@ -274,6 +321,7 @@ BarWidget {
     meterAvailable: root.meterAvailable
     busy: setProc.running || hwSetProc.running
     errorText: root.errorText
+    savedHint: root.savedHint
     resetting: root.resetting
     onSourceVolumeRequested: function(percent) { root.queueSet("srcVol", Model.setSourceVolumeCommand(root.status, percent)) }
     onSourceMuteRequested: function(muted) { root.queueSet("srcMute", Model.setSourceMuteCommand(root.status, muted)) }
