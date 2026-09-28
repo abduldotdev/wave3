@@ -29,6 +29,7 @@ PopupWindow {
   property bool meterAvailable: true
   property bool busy: false
   property string errorText: ""
+  property string savedHint: ""
   property bool resetting: false
   property bool isDragging: false
   // Set when the window was hidden under us, so the fade-out does not re-map it.
@@ -944,6 +945,16 @@ PopupWindow {
         fontFamily: root.fontFamily
         fontSize: 11
         onClicked: root.resetRequested()
+      }
+
+      Text {
+        visible: root.savedHint !== ""
+        text: root.savedHint
+        color: root.safeMuted
+        font.family: root.fontFamily
+        font.pixelSize: 11
+        wrapMode: Text.Wrap
+        width: parent.width
       }
 
       Text {

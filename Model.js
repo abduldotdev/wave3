@@ -75,8 +75,12 @@ function parseHwStatus(text) {
     ledsFlip: false,
     gainLock: false,
     raw: "",
-    hwReady: false
+    hwReady: false,
+    error: "",
+    transient: false,
+    stale: false
   }
+  var hasPresent = false
   var lines = String(text || "").split("\n")
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i].trim()
@@ -84,7 +88,11 @@ function parseHwStatus(text) {
     if (eq <= 0) continue
     var key = line.slice(0, eq)
     var value = line.slice(eq + 1)
-    if (key === "present") status.present = value === "yes"
+    if (key === "present") {
+      hasPresent = true
+      status.present = value === "yes"
+    }
+    else if (key === "error") status.error = value
     else if (key === "access") status.access = value
     else if (key === "device") status.device = value
     else if (key === "api") status.api = value
@@ -114,6 +122,7 @@ function parseHwStatus(text) {
     else if (key === "gain_lock") status.gainLock = value === "1" || value === "yes" || value === "true" || value === "on"
     else if (key === "raw") status.raw = value
   }
+  status.transient = Boolean(status.error !== "" && !hasPresent)
   status.hwReady = Boolean(status.present && status.access === "ok" && status.supported)
   if (!status.present) {
     status.access = ""
@@ -123,6 +132,22 @@ function parseHwStatus(text) {
     status.hwReady = false
   }
   return status
+}
+
+// Merges hardware status updates, keeping the last good state on transient errors.
+function mergeHwStatus(prev, next) {
+  if (!next) next = parseHwStatus("")
+  if (next.transient && prev && prev.hwReady) {
+    var copy = {}
+    for (var k in prev) {
+      if (Object.prototype.hasOwnProperty.call(prev, k)) copy[k] = prev[k]
+    }
+    copy.stale = true
+    copy.error = next.error || ""
+    return copy
+  }
+  next.stale = false
+  return next
 }
 
 // Whether the mic is muted either via pactl or via hardware mute.
@@ -314,12 +339,41 @@ function quantizeDirectMonitor(v) {
   return Math.round(clamped / 5) * 5
 }
 
+var SAVED_HINT = "Saved · restores on reconnect"
+
+// Parses bin/wave3-hw set stdout key=value lines.
+function parseHwSetOutput(text) {
+  var result = {
+    field: "",
+    value: "",
+    saved: ""
+  }
+  var lines = String(text || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim()
+    var eq = line.indexOf("=")
+    if (eq <= 0) continue
+    var key = line.slice(0, eq)
+    var value = line.slice(eq + 1)
+    if (key === "saved") {
+      result.saved = value
+    } else if (result.field === "") {
+      result.field = key
+      result.value = value
+    }
+  }
+  return result
+}
+
 // Export for Node.js test environment (in QML, top-level functions and vars
 // are directly accessible via import namespace).
 if (typeof module !== "undefined") {
   module.exports = {
     parseStatus: parseStatus,
     parseHwStatus: parseHwStatus,
+    mergeHwStatus: mergeHwStatus,
+    parseHwSetOutput: parseHwSetOutput,
+    SAVED_HINT: SAVED_HINT,
     isMuted: isMuted,
     statusLevel: statusLevel,
     statusSummary: statusSummary,

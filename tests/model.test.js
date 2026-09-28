@@ -382,3 +382,111 @@ test("icon-state and mute logic with hardware and virtual default", () => {
   assert.match(Model.statusSummary(virtDefault), /filter source default/)
 })
 
+test("mergeHwStatus keeps last good state on transient error (T-8)", () => {
+  const good = Model.parseHwStatus(HW_OK)
+  assert.equal(good.hwReady, true)
+  assert.equal(good.stale, false)
+  assert.equal(good.error, "")
+
+  const busy = Model.parseHwStatus("error=busy\n")
+  assert.equal(busy.hwReady, false)
+  assert.equal(busy.transient, true)
+  assert.equal(busy.error, "busy")
+
+  // After a good status, merging error=busy keeps hwReady === true and old field values, with stale === true
+  const merged = Model.mergeHwStatus(good, busy)
+  assert.equal(merged.hwReady, true)
+  assert.equal(merged.stale, true)
+  assert.equal(merged.error, "busy")
+  assert.equal(merged.gainDb, 10.0)
+  assert.equal(merged.clipguard, true)
+  assert.equal(merged.lowcut, true)
+  assert.equal(merged.hpDb, -20.5)
+  assert.equal(merged.volumeSelect, 1)
+  assert.equal(merged.raw, good.raw)
+
+  // A following good status gives stale === false
+  const recovered = Model.mergeHwStatus(merged, good)
+  assert.equal(recovered.hwReady, true)
+  assert.equal(recovered.stale, false)
+  assert.equal(recovered.error, "")
+  assert.equal(recovered.gainDb, 10.0)
+})
+
+test("mergeHwStatus with definitive states gives hwReady === false (T-8)", () => {
+  const good = Model.parseHwStatus(HW_OK)
+
+  // present=no
+  const absent = Model.parseHwStatus("present=no\n")
+  assert.equal(absent.transient, false)
+  const mergedAbsent = Model.mergeHwStatus(good, absent)
+  assert.equal(mergedAbsent.hwReady, false)
+  assert.equal(mergedAbsent.stale, false)
+
+  // access=denied
+  const denied = Model.parseHwStatus("present=yes\naccess=denied\nsupported=no\n")
+  assert.equal(denied.transient, false)
+  const mergedDenied = Model.mergeHwStatus(good, denied)
+  assert.equal(mergedDenied.hwReady, false)
+  assert.equal(mergedDenied.stale, false)
+
+  // supported=no
+  const unsupported = Model.parseHwStatus("present=yes\naccess=ok\nsupported=no\n")
+  assert.equal(unsupported.transient, false)
+  const mergedUnsupported = Model.mergeHwStatus(good, unsupported)
+  assert.equal(mergedUnsupported.hwReady, false)
+  assert.equal(mergedUnsupported.stale, false)
+})
+
+test("mergeHwStatus with no previous good status gives hwReady === false (T-8)", () => {
+  const busy = Model.parseHwStatus("error=busy\n")
+  const initial = Model.parseHwStatus("")
+  const merged = Model.mergeHwStatus(initial, busy)
+  assert.equal(merged.hwReady, false)
+  assert.equal(merged.stale, false)
+
+  const mergedNull = Model.mergeHwStatus(null, busy)
+  assert.equal(mergedNull.hwReady, false)
+  assert.equal(mergedNull.stale, false)
+})
+
+test("parseHwSetOutput reads various set output forms (T-8)", () => {
+  assert.deepEqual(Model.parseHwSetOutput("lowcut=1\nsaved=yes\n"), {
+    field: "lowcut",
+    value: "1",
+    saved: "yes"
+  })
+
+  assert.deepEqual(Model.parseHwSetOutput("mute=1\nsaved=no\n"), {
+    field: "mute",
+    value: "1",
+    saved: "no"
+  })
+
+  assert.deepEqual(Model.parseHwSetOutput("gain_db=12.5\nsaved=error\n"), {
+    field: "gain_db",
+    value: "12.5",
+    saved: "error"
+  })
+
+  assert.deepEqual(Model.parseHwSetOutput("saved=no\n"), {
+    field: "",
+    value: "",
+    saved: "no"
+  })
+
+  assert.deepEqual(Model.parseHwSetOutput(""), {
+    field: "",
+    value: "",
+    saved: ""
+  })
+
+  assert.deepEqual(Model.parseHwSetOutput(null), {
+    field: "",
+    value: "",
+    saved: ""
+  })
+
+  assert.equal(Model.SAVED_HINT, "Saved · restores on reconnect")
+})
+
