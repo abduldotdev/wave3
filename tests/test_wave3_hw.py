@@ -369,6 +369,42 @@ class TestWave3HwSubprocess(unittest.TestCase):
         with open(self.config_path, "r") as f:
             self.assertEqual(f.read().strip(), LIVE_HEX)
 
+    def test_live_hw_script_rollback_on_failed_change_write(self):
+        """Simulate a failing change write that landed on device; verify rollback restores start block."""
+        with open(self.config_path, "w") as f:
+            f.write(LIVE_HEX + "\n")
+
+        wrapper_path = os.path.join(self.test_dir, "failing_wave3_hw.sh")
+        wrapper_content = f"""#!/usr/bin/env bash
+REAL_BIN="{BIN_WAVE3_HW}"
+if [[ "$1" == "set" && "$2" == "clipguard" && "$3" == "0" ]]; then
+  # Simulate successful write landing on device but readback verification failing with exit 6
+  "$REAL_BIN" "$@" >/dev/null 2>&1
+  echo "wave3-hw: simulated read-back verification failed for field 'clipguard'" >&2
+  exit 6
+fi
+exec "$REAL_BIN" "$@"
+"""
+        with open(wrapper_path, "w") as f:
+            f.write(wrapper_content)
+        os.chmod(wrapper_path, 0o755)
+
+        env = self.env.copy()
+        env["WAVE3_HW"] = wrapper_path
+
+        res = subprocess.run(
+            ["bash", LIVE_HW_SH],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertNotEqual(res.returncode, 0, "live-hw.sh should have exited non-zero on simulated error")
+        self.assertIn("mismatch or error on 'clipguard'", res.stderr)
+
+        # Assert the final block equals the start block (rollback restored clipguard=1)
+        with open(self.config_path, "r") as f:
+            self.assertEqual(f.read().strip(), LIVE_HEX)
+
 
 if __name__ == "__main__":
     unittest.main()
