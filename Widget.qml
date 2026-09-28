@@ -16,6 +16,7 @@ BarWidget {
   property string errorText: ""
   // A read asked for while one is running; it may predate a set, so run again.
   property bool refreshAgain: false
+  property int statusSerial: 0
 
   // Set commands waiting for setProc, keyed by control; the latest value wins.
   property var pendingSets: ({})
@@ -103,6 +104,7 @@ BarWidget {
         // A mic that comes back while the popup is open gets a fresh meter try.
         if (next.present && !root.status.present) root.meterAvailable = true
         root.status = next
+        root.statusSerial++
       }
     }
     onExited: {
@@ -200,6 +202,7 @@ BarWidget {
     bar: root.bar
     owner: root
     status: root.status
+    statusSerial: root.statusSerial
     level: root.meterLevel
     holdLevel: root.meterHold ? root.meterHold.value : 0
     levelText: root.meterText

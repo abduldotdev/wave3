@@ -16,6 +16,8 @@ PopupWindow {
   property bool open: false
 
   property var status: Model.parseStatus("")
+  // Bumped by the widget on every status read, changed or not.
+  property int statusSerial: 0
   property real level: 0
   property real holdLevel: 0
   property string levelText: "-∞ dBFS"
@@ -123,13 +125,19 @@ PopupWindow {
     property bool controlEnabled: true
     signal committed(int val)
 
-    // Last committed value, shown until the next status read reports a change,
-    // so the thumb does not jump back to the old percent on release.
+    // Last committed value, shown until the next status read, so the thumb
+    // does not jump back to the old percent on release. Any read clears it,
+    // so a set that failed shows the real value again.
     property int pendingVal: -1
     property int liveVal: Model.sliderValue(percent)
-    onPercentChanged: {
-      pendingVal = -1
-      if (!slider.dragging) liveVal = Model.sliderValue(percent)
+    onPercentChanged: if (!slider.dragging) liveVal = Model.sliderValue(percent)
+
+    Connections {
+      target: root
+      function onStatusSerialChanged() {
+        ws.pendingVal = -1
+        if (!slider.dragging) ws.liveVal = Model.sliderValue(ws.percent)
+      }
     }
 
     width: parent.width
