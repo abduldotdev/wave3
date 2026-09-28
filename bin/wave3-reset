@@ -28,8 +28,9 @@ find_card() {
 }
 
 # Prints "<index> <name> <state>" for the Wave:3 input source.
+# An input monitor shares this prefix, so ignore names ending in .monitor.
 find_source() {
-  pactl list short sources | awk -v p="$SOURCE_PATTERN" '!found && $2 ~ p { print $1, $2, $NF; found = 1 }'
+  pactl list short sources | awk -v p="$SOURCE_PATTERN" '!found && $2 ~ p && $2 !~ /\.monitor$/ { print $1, $2, $NF; found = 1 }'
 }
 
 # Prints "<index> <name> <state>" for the Wave:3 headphone sink.
