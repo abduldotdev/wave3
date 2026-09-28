@@ -28,6 +28,8 @@ case "$1 ${2:-}" in
       [ -f "$STUB/sink" ] && echo "53	$(cat "$STUB/sink")	PipeWire	s24le 2ch 48000Hz	RUNNING"
     else
       echo "34	$OTHER	PipeWire	s16le 2ch 48000Hz	SUSPENDED"
+      # Listed before the real mic. A matcher that skips the .monitor check selects it.
+      [ -f "$STUB/card" ] && echo "59	alsa_input.usb-Elgato_Systems_Elgato_Wave_3_TEST123-00.mono-fallback.monitor	PipeWire	s24le 1ch 48000Hz	SUSPENDED"
       [ -f "$STUB/source" ] && echo "$(cat "$STUB/srcidx")	$(cat "$STUB/source")	PipeWire	s24le 1ch 48000Hz	SUSPENDED"
       [ -f "$STUB/card" ] && echo "60	alsa_output.usb-Elgato_Systems_Elgato_Wave_3_TEST123-00.analog-stereo.monitor	PipeWire	s24le 2ch 48000Hz	SUSPENDED"
     fi ;;
@@ -232,7 +234,7 @@ set +e; out="$("$ROOT/bin/wave3-meter" 2>"$TMP/meter.err")"; rc=$?; set -e
 check "meter: peaks are 0, 32767, 32767" '[ "$out" = "$(printf "0\n32767\n32767")" ]'
 check "meter: parec ending exits 1" '[ "$rc" -eq 1 ]'
 log="$(cat "$STUB/parec.log")"
-check "meter: parec targets the mic by name" '[[ "$log" == *"-d $SRC"* && "$log" == *"Wave:3 level meter"* && "$log" != *".monitor"* ]]'
+check "meter: parec -d is the real source, not a monitor" '[ "${log##*-d }" = "$SRC" ] && [[ "$log" != *".monitor"* && "$log" == *"Wave:3 level meter"* ]]'
 
 fresh no
 echo "$CARD" > "$STUB/card"
