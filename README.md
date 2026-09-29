@@ -215,7 +215,7 @@ Run **Remove setup** (second click within 3 seconds) or `wave3-setup uninstall` 
 omarchy plugin remove abduldotdev.wave3
 ```
 
-Uninstall disables and stops `wave3-watch.service` when the unit is one this plugin installed, deletes that unit (generated file or symlink into the plugin directory), deletes the WirePlumber symlink when it resolves into the plugin (including a byte-identical target), and runs `systemctl --user daemon-reload`. A second run exits 0 and prints `nothing to remove`. Foreign files are left in place. The settings store and `~/.config/abduldotdev.wave3` are left in place.
+Uninstall disables and stops `wave3-watch.service` when the unit is one this plugin installed, deletes that unit (only when its full content, directly or through a symlink, is the generated or shipped unit; a unit that merely carries the marker line is foreign), deletes the WirePlumber symlink when it resolves into the plugin (including a byte-identical target), and runs `systemctl --user daemon-reload`. A second run exits 0 and prints `nothing to remove`. Foreign files are left in place. The settings store and `~/.config/abduldotdev.wave3` are left in place.
 
 If `udev=installed`, uninstall prints this and does not run it:
 
