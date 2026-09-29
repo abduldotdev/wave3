@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import Quickshell
 import Quickshell.Hyprland
 import qs.Commons
@@ -91,7 +92,12 @@ PopupWindow {
   property int cardPadding: Style.spacing.popupPadding
 
   implicitWidth: 380
-  implicitHeight: mainCol.implicitHeight + card.contentTopInset + card.contentBottomInset
+  // Sections scroll under the fixed header once the content passes the cap.
+  readonly property real screenHeight: anchorWindow && anchorWindow.screen ? anchorWindow.screen.height : 0
+  readonly property real maxHeight: screenHeight > 0 ? Math.min(560, Math.round(screenHeight * 0.65)) : 560
+  readonly property real naturalHeight: headerRow.height + headerSep.height + bodyCol.implicitHeight + mainCol.spacing * 2
+    + card.contentTopInset + card.contentBottomInset
+  implicitHeight: Math.min(naturalHeight, maxHeight)
 
   visible: open || (card.opacity > 0 && !dismissed)
   color: "transparent"
@@ -628,524 +634,574 @@ PopupWindow {
       }
 
       PanelSeparator {
+        id: headerSep
         foreground: root.fg
       }
 
-      // Hardware setup notice (shown when mic is connected but hardware controls need udev rules)
-      Column {
+      Flickable {
+        id: bodyFlick
         width: parent.width
-        spacing: 4
-        visible: root.status.present && !root.hwReady
+        height: Math.max(0, mainCol.height - headerRow.height - headerSep.height - mainCol.spacing * 2)
+        contentWidth: width
+        contentHeight: bodyCol.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        // Wheel and scrollbar only, so slider drags and text selection are never stolen.
+        interactive: false
 
-        Text {
-          text: "Hardware controls need setup:"
-          color: root.urgent
-          font.family: root.fontFamily
-          font.pixelSize: 11
-          font.bold: true
-        }
-
-        Rectangle {
-          width: parent.width
-          implicitHeight: setupCmdText.implicitHeight + 8
-          color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
-          radius: Style.cornerRadius
-          border.width: 1
-          border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.3)
-
-          TextEdit {
-            id: setupCmdText
-            anchors.fill: parent
-            anchors.margins: 4
-            text: root.udevInstallCommand
-            readOnly: true
-            selectByMouse: true
-            wrapMode: TextEdit.Wrap
-            color: root.fg
-            font.family: root.fontFamily
-            font.pixelSize: 9
-          }
-        }
-
-        PanelSeparator {
-          foreground: root.fg
-        }
-      }
-
-      // Microphone
-      Column {
-        width: parent.width
-        spacing: 10
-        visible: root.status.present
-
-        PanelSectionHeader {
-          text: "MICROPHONE"
-          foreground: root.fg
-          fontFamily: root.fontFamily
-        }
-
-        // Hardware Gain control (0..40 dB) when hwReady; hidden when !hwReady
-        GainControl {
-          visible: root.hwReady
-          gainDb: root.hwStatus.gainDb
-          onCommitted: function(v) { root.hwSetRequested("gain_db", v) }
-        }
-
-        // Mute mic via hw mute when hwReady, fallback to pactl mute when !hwReady
-        WaveToggle {
-          label: "Mute"
-          checked: root.hwReady ? root.hwStatus.mute : root.status.muted
-          onToggled: {
-            if (root.hwReady) root.hwSetRequested("mute", !root.hwStatus.mute)
-            else root.sourceMuteRequested(!root.status.muted)
-          }
-        }
-
-        // Level meter: peak bar, peak-hold marker and dBFS readout.
-        Column {
-          width: parent.width
-          spacing: 3
-
-          Row {
-            width: parent.width
-
-            Text {
-              text: "Level"
-              color: root.fg
-              font.family: root.fontFamily
-              font.pixelSize: 12
-              font.bold: true
-              width: parent.width - levelLabel.implicitWidth
+        ScrollBar.vertical: ScrollBar {
+          id: vbar
+          policy: ScrollBar.AsNeeded
+          width: 8
+          contentItem: Rectangle {
+            implicitWidth: 6
+            implicitHeight: 32
+            radius: Style.cornerRadius
+            color: vbar.pressed ? root.fg : (vbar.hovered ? root.fg : root.safeMuted)
+            opacity: vbar.active || vbar.hovered ? 0.85 : 0.4
+            Behavior on opacity {
+              NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
             }
+          }
+        }
+
+        Column {
+          id: bodyCol
+          width: bodyFlick.width - 12
+          spacing: 8
+
+          // Hardware setup notice (shown when mic is connected but hardware controls need udev rules)
+          Column {
+            width: parent.width
+            spacing: 4
+            visible: root.status.present && !root.hwReady
 
             Text {
-              id: levelLabel
-              text: !root.meterAvailable ? "Level unavailable"
-                : ((root.status.muted || (root.hwReady && root.hwStatus.mute)) ? "Muted" : root.levelText)
-              color: root.safeMuted
+              text: "Hardware controls need setup:"
+              color: root.urgent
               font.family: root.fontFamily
               font.pixelSize: 11
+              font.bold: true
+            }
+
+            Rectangle {
+              width: parent.width
+              implicitHeight: setupCmdText.implicitHeight + 8
+              color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
+              radius: Style.cornerRadius
+              border.width: 1
+              border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.3)
+
+              TextEdit {
+                id: setupCmdText
+                anchors.fill: parent
+                anchors.margins: 4
+                text: root.udevInstallCommand
+                readOnly: true
+                selectByMouse: true
+                wrapMode: TextEdit.Wrap
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: 9
+              }
+            }
+
+            PanelSeparator {
+              foreground: root.fg
             }
           }
 
-          Rectangle {
-            id: meterTrack
+          // Microphone
+          Column {
             width: parent.width
-            height: 6
-            radius: height / 2
-            color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.12)
-            opacity: root.meterAvailable ? 1.0 : 0.4
+            spacing: 10
+            visible: root.status.present
 
-            Rectangle {
-              height: parent.height
-              radius: parent.radius
-              width: parent.width * Model.meterPosition((root.status.muted || (root.hwReady && root.hwStatus.mute)) ? 0 : root.level)
-              color: root.level >= 0.99 ? root.urgent : root.accent
-
-              Behavior on width { NumberAnimation { duration: 70 } }
+            PanelSectionHeader {
+              text: "MICROPHONE"
+              foreground: root.fg
+              fontFamily: root.fontFamily
             }
 
-            Rectangle {
-              visible: !(root.status.muted || (root.hwReady && root.hwStatus.mute)) && root.holdLevel > 0
-              width: 2
-              height: parent.height
-              x: Math.max(0, parent.width * Model.meterPosition(root.holdLevel) - width)
-              color: root.holdLevel >= 0.99 ? root.urgent : root.fg
+            // Hardware Gain control (0..40 dB) when hwReady; hidden when !hwReady
+            GainControl {
+              visible: root.hwReady
+              gainDb: root.hwStatus.gainDb
+              onCommitted: function(v) { root.hwSetRequested("gain_db", v) }
+            }
 
-              Behavior on x { NumberAnimation { duration: 70 } }
+            // Mute mic via hw mute when hwReady, fallback to pactl mute when !hwReady
+            WaveToggle {
+              label: "Mute"
+              checked: root.hwReady ? root.hwStatus.mute : root.status.muted
+              onToggled: {
+                if (root.hwReady) root.hwSetRequested("mute", !root.hwStatus.mute)
+                else root.sourceMuteRequested(!root.status.muted)
+              }
+            }
+
+            // Level meter: peak bar, peak-hold marker and dBFS readout.
+            Column {
+              width: parent.width
+              spacing: 3
+
+              Row {
+                width: parent.width
+
+                Text {
+                  text: "Level"
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: 12
+                  font.bold: true
+                  width: parent.width - levelLabel.implicitWidth
+                }
+
+                Text {
+                  id: levelLabel
+                  text: !root.meterAvailable ? "Level unavailable"
+                    : ((root.status.muted || (root.hwReady && root.hwStatus.mute)) ? "Muted" : root.levelText)
+                  color: root.safeMuted
+                  font.family: root.fontFamily
+                  font.pixelSize: 11
+                }
+              }
+
+              Rectangle {
+                id: meterTrack
+                width: parent.width
+                height: 6
+                radius: height / 2
+                color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.12)
+                opacity: root.meterAvailable ? 1.0 : 0.4
+
+                Rectangle {
+                  height: parent.height
+                  radius: parent.radius
+                  width: parent.width * Model.meterPosition((root.status.muted || (root.hwReady && root.hwStatus.mute)) ? 0 : root.level)
+                  color: root.level >= 0.99 ? root.urgent : root.accent
+
+                  Behavior on width { NumberAnimation { duration: 70 } }
+                }
+
+                Rectangle {
+                  visible: !(root.status.muted || (root.hwReady && root.hwStatus.mute)) && root.holdLevel > 0
+                  width: 2
+                  height: parent.height
+                  x: Math.max(0, parent.width * Model.meterPosition(root.holdLevel) - width)
+                  color: root.holdLevel >= 0.99 ? root.urgent : root.fg
+
+                  Behavior on x { NumberAnimation { duration: 70 } }
+                }
+              }
+            }
+
+            Button {
+              text: "Set as default"
+              bordered: true
+              visible: Model.canSetDefault(root.status)
+              enabled: !root.resetting
+              foreground: root.fg
+              background: root.bg
+              accent: root.accent
+              fontFamily: root.fontFamily
+              fontSize: 11
+              onClicked: root.setDefaultRequested()
+            }
+
+            PanelSeparator {
+              foreground: root.fg
             }
           }
-        }
 
-        Button {
-          text: "Set as default"
-          bordered: true
-          visible: Model.canSetDefault(root.status)
-          enabled: !root.resetting
-          foreground: root.fg
-          background: root.bg
-          accent: root.accent
-          fontFamily: root.fontFamily
-          fontSize: 11
-          onClicked: root.setDefaultRequested()
-        }
+          // Monitoring (Hardware mode)
+          Column {
+            width: parent.width
+            spacing: 10
+            visible: root.status.present && root.hwReady
 
-        PanelSeparator {
-          foreground: root.fg
-        }
-      }
+            PanelSectionHeader {
+              text: "MONITORING"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+            }
 
-      // Monitoring (Hardware mode)
-      Column {
-        width: parent.width
-        spacing: 10
-        visible: root.status.present && root.hwReady
+            HwSlider {
+              label: "Headphones"
+              value: root.hwStatus.hpDb
+              minimum: -60
+              maximum: 0
+              step: 0.5
+              integer: false
+              unit: "dB"
+              onCommitted: function(v) { root.hwSetRequested("hp_db", Model.quantizeHp(v)) }
+            }
 
-        PanelSectionHeader {
-          text: "MONITORING"
-          foreground: root.fg
-          fontFamily: root.fontFamily
-        }
+            WaveToggle {
+              label: "Mute headphones"
+              checked: root.hwStatus.hpMute
+              onToggled: root.hwSetRequested("hp_mute", !root.hwStatus.hpMute)
+            }
 
-        HwSlider {
-          label: "Headphones"
-          value: root.hwStatus.hpDb
-          minimum: -60
-          maximum: 0
-          step: 0.5
-          integer: false
-          unit: "dB"
-          onCommitted: function(v) { root.hwSetRequested("hp_db", Model.quantizeHp(v)) }
-        }
+            HwSlider {
+              label: "Monitor blend"
+              sublabel: "Mic ↔ Computer"
+              value: root.hwStatus.directMonitor
+              minimum: 0
+              maximum: 100
+              step: 5
+              integer: true
+              unit: "%"
+              onCommitted: function(v) { root.hwSetRequested("direct_monitor", Model.quantizeDirectMonitor(v)) }
+            }
 
-        WaveToggle {
-          label: "Mute headphones"
-          checked: root.hwStatus.hpMute
-          onToggled: root.hwSetRequested("hp_mute", !root.hwStatus.hpMute)
-        }
+            PanelSeparator {
+              foreground: root.fg
+            }
+          }
 
-        HwSlider {
-          label: "Monitor blend"
-          sublabel: "Mic ↔ Computer"
-          value: root.hwStatus.directMonitor
-          minimum: 0
-          maximum: 100
-          step: 5
-          integer: true
-          unit: "%"
-          onCommitted: function(v) { root.hwSetRequested("direct_monitor", Model.quantizeDirectMonitor(v)) }
-        }
+          // Headphones (Fallback mode when not hwReady)
+          Column {
+            width: parent.width
+            spacing: 10
+            visible: root.status.present && !root.hwReady && Model.headphonesAvailable(root.status)
 
-        PanelSeparator {
-          foreground: root.fg
-        }
-      }
+            PanelSectionHeader {
+              text: "HEADPHONES"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+            }
 
-      // Headphones (Fallback mode when not hwReady)
-      Column {
-        width: parent.width
-        spacing: 10
-        visible: root.status.present && !root.hwReady && Model.headphonesAvailable(root.status)
+            WaveSlider {
+              label: "Volume"
+              percent: root.status.sinkVolume
+              controlEnabled: root.status.sinkVolume >= 0
+              onCommitted: function(v) { root.sinkVolumeRequested(v) }
+            }
 
-        PanelSectionHeader {
-          text: "HEADPHONES"
-          foreground: root.fg
-          fontFamily: root.fontFamily
-        }
+            WaveToggle {
+              label: "Mute"
+              checked: root.status.sinkMuted
+              onToggled: root.sinkMuteRequested(!root.status.sinkMuted)
+            }
 
-        WaveSlider {
-          label: "Volume"
-          percent: root.status.sinkVolume
-          controlEnabled: root.status.sinkVolume >= 0
-          onCommitted: function(v) { root.sinkVolumeRequested(v) }
-        }
+            PanelSeparator {
+              foreground: root.fg
+            }
+          }
 
-        WaveToggle {
-          label: "Mute"
-          checked: root.status.sinkMuted
-          onToggled: root.sinkMuteRequested(!root.status.sinkMuted)
-        }
+          // Onboard processing (Hardware mode)
+          Column {
+            width: parent.width
+            spacing: 10
+            visible: root.status.present && root.hwReady
 
-        PanelSeparator {
-          foreground: root.fg
-        }
-      }
+            PanelSectionHeader {
+              text: "ONBOARD PROCESSING"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+            }
 
-      // Onboard processing (Hardware mode)
-      Column {
-        width: parent.width
-        spacing: 10
-        visible: root.status.present && root.hwReady
+            WaveToggle {
+              label: "Clipguard"
+              checked: root.hwStatus.clipguard
+              onToggled: root.hwSetRequested("clipguard", !root.hwStatus.clipguard)
+            }
 
-        PanelSectionHeader {
-          text: "ONBOARD PROCESSING"
-          foreground: root.fg
-          fontFamily: root.fontFamily
-        }
+            WaveToggle {
+              label: "Low cut"
+              checked: root.hwStatus.lowcut
+              onToggled: root.hwSetRequested("lowcut", !root.hwStatus.lowcut)
+            }
 
-        WaveToggle {
-          label: "Clipguard"
-          checked: root.hwStatus.clipguard
-          onToggled: root.hwSetRequested("clipguard", !root.hwStatus.clipguard)
-        }
+            PanelSeparator {
+              foreground: root.fg
+            }
+          }
 
-        WaveToggle {
-          label: "Low cut"
-          checked: root.hwStatus.lowcut
-          onToggled: root.hwSetRequested("lowcut", !root.hwStatus.lowcut)
-        }
+          // Device (Hardware mode)
+          Column {
+            width: parent.width
+            spacing: 10
+            visible: root.status.present && root.hwReady
 
-        PanelSeparator {
-          foreground: root.fg
-        }
-      }
+            PanelSectionHeader {
+              text: "DEVICE"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+            }
 
-      // Device (Hardware mode)
-      Column {
-        width: parent.width
-        spacing: 10
-        visible: root.status.present && root.hwReady
+            Column {
+              width: parent.width
+              spacing: 2
 
-        PanelSectionHeader {
-          text: "DEVICE"
-          foreground: root.fg
-          fontFamily: root.fontFamily
-        }
+              WaveToggle {
+                label: "Gain lock"
+                checked: root.hwStatus.gainLock
+                onToggled: root.hwSetRequested("gain_lock", !root.hwStatus.gainLock)
+              }
 
-        Column {
-          width: parent.width
-          spacing: 2
+              Text {
+                text: "Locks gain from OS and apps; dial and this panel still work."
+                color: root.safeMuted
+                font.family: root.fontFamily
+                font.pixelSize: 10
+                wrapMode: Text.Wrap
+                width: parent.width
+              }
+            }
 
-          WaveToggle {
-            label: "Gain lock"
-            checked: root.hwStatus.gainLock
-            onToggled: root.hwSetRequested("gain_lock", !root.hwStatus.gainLock)
+            WaveToggle {
+              label: "LEDs off"
+              checked: root.hwStatus.ledsOff
+              onToggled: root.hwSetRequested("leds_off", !root.hwStatus.ledsOff)
+            }
+
+            WaveToggle {
+              label: "Flip LEDs"
+              checked: root.hwStatus.ledsFlip
+              onToggled: root.hwSetRequested("leds_flip", !root.hwStatus.ledsFlip)
+            }
+
+            Row {
+              width: parent.width
+              height: Math.max(dialModeText.implicitHeight, dialBtnRow.implicitHeight)
+
+              Text {
+                id: dialModeText
+                text: "Dial mode"
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: 12
+                font.bold: true
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - dialBtnRow.implicitWidth
+              }
+
+              Row {
+                id: dialBtnRow
+                spacing: 4
+                anchors.verticalCenter: parent.verticalCenter
+
+                Button {
+                  text: "MIC"
+                  bordered: true
+                  selected: root.hwStatus.volumeSelect === 1
+                  foreground: root.fg
+                  background: root.bg
+                  accent: root.accent
+                  fontFamily: root.fontFamily
+                  fontSize: 10
+                  horizontalPadding: 6
+                  verticalPadding: 2
+                  onClicked: root.hwSetRequested("volume_select", 1)
+                }
+
+                Button {
+                  text: "HEADPHONE"
+                  bordered: true
+                  selected: root.hwStatus.volumeSelect === 2
+                  foreground: root.fg
+                  background: root.bg
+                  accent: root.accent
+                  fontFamily: root.fontFamily
+                  fontSize: 10
+                  horizontalPadding: 6
+                  verticalPadding: 2
+                  onClicked: root.hwSetRequested("volume_select", 2)
+                }
+
+                Button {
+                  text: "MIX"
+                  bordered: true
+                  selected: root.hwStatus.volumeSelect === 3
+                  foreground: root.fg
+                  background: root.bg
+                  accent: root.accent
+                  fontFamily: root.fontFamily
+                  fontSize: 10
+                  horizontalPadding: 6
+                  verticalPadding: 2
+                  onClicked: root.hwSetRequested("volume_select", 3)
+                }
+              }
+            }
+
+            PanelSeparator {
+              foreground: root.fg
+            }
           }
 
           Text {
-            text: "Locks gain from OS and apps; dial and this panel still work."
+            visible: !root.status.present
+            text: "Not connected. Plug in the Wave:3 or run Reset."
             color: root.safeMuted
             font.family: root.fontFamily
-            font.pixelSize: 10
+            font.pixelSize: 11
             wrapMode: Text.Wrap
             width: parent.width
           }
-        }
 
-        WaveToggle {
-          label: "LEDs off"
-          checked: root.hwStatus.ledsOff
-          onToggled: root.hwSetRequested("leds_off", !root.hwStatus.ledsOff)
-        }
-
-        WaveToggle {
-          label: "Flip LEDs"
-          checked: root.hwStatus.ledsFlip
-          onToggled: root.hwSetRequested("leds_flip", !root.hwStatus.ledsFlip)
-        }
-
-        Row {
-          width: parent.width
-          height: Math.max(dialModeText.implicitHeight, dialBtnRow.implicitHeight)
-
-          Text {
-            id: dialModeText
-            text: "Dial mode"
-            color: root.fg
-            font.family: root.fontFamily
-            font.pixelSize: 12
-            font.bold: true
-            anchors.verticalCenter: parent.verticalCenter
-            width: parent.width - dialBtnRow.implicitWidth
-          }
-
-          Row {
-            id: dialBtnRow
-            spacing: 4
-            anchors.verticalCenter: parent.verticalCenter
-
-            Button {
-              text: "MIC"
-              bordered: true
-              selected: root.hwStatus.volumeSelect === 1
-              foreground: root.fg
-              background: root.bg
-              accent: root.accent
-              fontFamily: root.fontFamily
-              fontSize: 10
-              horizontalPadding: 6
-              verticalPadding: 2
-              onClicked: root.hwSetRequested("volume_select", 1)
-            }
-
-            Button {
-              text: "HEADPHONE"
-              bordered: true
-              selected: root.hwStatus.volumeSelect === 2
-              foreground: root.fg
-              background: root.bg
-              accent: root.accent
-              fontFamily: root.fontFamily
-              fontSize: 10
-              horizontalPadding: 6
-              verticalPadding: 2
-              onClicked: root.hwSetRequested("volume_select", 2)
-            }
-
-            Button {
-              text: "MIX"
-              bordered: true
-              selected: root.hwStatus.volumeSelect === 3
-              foreground: root.fg
-              background: root.bg
-              accent: root.accent
-              fontFamily: root.fontFamily
-              fontSize: 10
-              horizontalPadding: 6
-              verticalPadding: 2
-              onClicked: root.hwSetRequested("volume_select", 3)
-            }
-          }
-        }
-
-        PanelSeparator {
-          foreground: root.fg
-        }
-      }
-
-      Text {
-        visible: !root.status.present
-        text: "Not connected. Plug in the Wave:3 or run Reset."
-        color: root.safeMuted
-        font.family: root.fontFamily
-        font.pixelSize: 11
-        wrapMode: Text.Wrap
-        width: parent.width
-      }
-
-      // Actions
-      Button {
-        text: root.resetting ? "Resetting…" : "Reset"
-        bordered: true
-        enabled: !root.resetting
-        foreground: root.fg
-        background: root.bg
-        accent: root.accent
-        fontFamily: root.fontFamily
-        fontSize: 11
-        onClicked: root.resetRequested()
-      }
-
-      Text {
-        visible: root.savedHint !== ""
-        text: root.savedHint
-        color: root.safeMuted
-        font.family: root.fontFamily
-        font.pixelSize: 11
-        wrapMode: Text.Wrap
-        width: parent.width
-      }
-
-      Text {
-        visible: root.errorText !== ""
-        text: root.errorText
-        color: root.urgent
-        font.family: root.fontFamily
-        font.pixelSize: 11
-        wrapMode: Text.Wrap
-        width: parent.width
-      }
-
-      // Read on open and after a setup action. Not on the status timer.
-      Column {
-        width: parent.width
-        spacing: 6
-        visible: root.setupStatus && root.setupStatus.known === true
-
-        PanelSeparator {
-          foreground: root.fg
-        }
-
-        PanelSectionHeader {
-          text: "SETUP"
-          foreground: root.fg
-          fontFamily: root.fontFamily
-        }
-
-        SetupRow {
-          label: "WirePlumber rule"
-          mark: root.setupStatus.wireplumber === "installed" ? "ok" : (root.setupStatus.wireplumber || "missing")
-        }
-
-        SetupRow {
-          label: "Watcher service"
-          mark: root.watcherState()
-        }
-
-        SetupRow {
-          label: "Hardware access"
-          mark: root.setupStatus.udev === "installed" ? "ok" : "missing"
-        }
-
-        Text {
-          visible: root.setupStatus.udev === "missing"
-          text: "One step needs sudo. Copy this command; it is not run for you."
-          color: root.safeMuted
-          font.family: root.fontFamily
-          font.pixelSize: 10
-          wrapMode: Text.Wrap
-          width: parent.width
-        }
-
-        Rectangle {
-          visible: root.setupStatus.udev === "missing" && root.setupStatus.udevCommand !== ""
-          width: parent.width
-          implicitHeight: setupCmd.implicitHeight + 8
-          color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
-          radius: Style.cornerRadius
-          border.width: 1
-          border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.3)
-
-          TextEdit {
-            id: setupCmd
-            anchors.fill: parent
-            anchors.margins: 4
-            text: root.setupStatus.udevCommand
-            readOnly: true
-            selectByMouse: true
-            wrapMode: TextEdit.Wrap
-            color: root.fg
-            font.family: root.fontFamily
-            font.pixelSize: 9
-          }
-        }
-
-        WaveToggle {
-          label: "Keep Wave:3 as default mic"
-          checked: root.setupStatus.keepDefault === true
-          controlEnabled: !root.setupBusy
-          onToggled: root.keepDefaultRequested(root.setupStatus.keepDefault !== true)
-        }
-
-        Row {
-          spacing: 8
-
+          // Actions
           Button {
-            text: "Set up"
+            text: root.resetting ? "Resetting…" : "Reset"
             bordered: true
-            visible: root.setupStatus.setup !== "complete"
-            enabled: !root.setupBusy
+            enabled: !root.resetting
             foreground: root.fg
             background: root.bg
             accent: root.accent
             fontFamily: root.fontFamily
             fontSize: 11
-            onClicked: if (!root.setupBusy) root.setupInstallRequested()
+            onClicked: root.resetRequested()
           }
 
-          Button {
-            text: root.removeArmed ? "Confirm remove" : "Remove setup"
-            bordered: true
-            visible: root.setupStatus.wireplumber === "installed"
-              || root.setupStatus.service === "installed"
-            enabled: !root.setupBusy
-            foreground: root.fg
-            background: root.bg
-            accent: root.accent
-            fontFamily: root.fontFamily
-            fontSize: 10
-            onClicked: root.armRemove()
+          Text {
+            visible: root.savedHint !== ""
+            text: root.savedHint
+            color: root.safeMuted
+            font.family: root.fontFamily
+            font.pixelSize: 11
+            wrapMode: Text.Wrap
+            width: parent.width
+          }
+
+          Text {
+            visible: root.errorText !== ""
+            text: root.errorText
+            color: root.urgent
+            font.family: root.fontFamily
+            font.pixelSize: 11
+            wrapMode: Text.Wrap
+            width: parent.width
+          }
+
+          // Read on open and after a setup action. Not on the status timer.
+          Column {
+            width: parent.width
+            spacing: 6
+            visible: root.setupStatus && root.setupStatus.known === true
+
+            PanelSeparator {
+              foreground: root.fg
+            }
+
+            PanelSectionHeader {
+              text: "SETUP"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+            }
+
+            SetupRow {
+              label: "WirePlumber rule"
+              mark: root.setupStatus.wireplumber === "installed" ? "ok" : (root.setupStatus.wireplumber || "missing")
+            }
+
+            SetupRow {
+              label: "Watcher service"
+              mark: root.watcherState()
+            }
+
+            SetupRow {
+              label: "Hardware access"
+              mark: root.setupStatus.udev === "installed" ? "ok" : "missing"
+            }
+
+            Text {
+              visible: root.setupStatus.udev === "missing"
+              text: "One step needs sudo. Copy this command; it is not run for you."
+              color: root.safeMuted
+              font.family: root.fontFamily
+              font.pixelSize: 10
+              wrapMode: Text.Wrap
+              width: parent.width
+            }
+
+            Rectangle {
+              visible: root.setupStatus.udev === "missing" && root.setupStatus.udevCommand !== ""
+              width: parent.width
+              implicitHeight: setupCmd.implicitHeight + 8
+              color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
+              radius: Style.cornerRadius
+              border.width: 1
+              border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.3)
+
+              TextEdit {
+                id: setupCmd
+                anchors.fill: parent
+                anchors.margins: 4
+                text: root.setupStatus.udevCommand
+                readOnly: true
+                selectByMouse: true
+                wrapMode: TextEdit.Wrap
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: 9
+              }
+            }
+
+            WaveToggle {
+              label: "Keep Wave:3 as default mic"
+              checked: root.setupStatus.keepDefault === true
+              controlEnabled: !root.setupBusy
+              onToggled: root.keepDefaultRequested(root.setupStatus.keepDefault !== true)
+            }
+
+            Row {
+              spacing: 8
+
+              Button {
+                text: "Set up"
+                bordered: true
+                visible: root.setupStatus.setup !== "complete"
+                enabled: !root.setupBusy
+                foreground: root.fg
+                background: root.bg
+                accent: root.accent
+                fontFamily: root.fontFamily
+                fontSize: 11
+                onClicked: if (!root.setupBusy) root.setupInstallRequested()
+              }
+
+              Button {
+                text: root.removeArmed ? "Confirm remove" : "Remove setup"
+                bordered: true
+                visible: root.setupStatus.wireplumber === "installed"
+                  || root.setupStatus.service === "installed"
+                enabled: !root.setupBusy
+                foreground: root.fg
+                background: root.bg
+                accent: root.accent
+                fontFamily: root.fontFamily
+                fontSize: 10
+                onClicked: root.armRemove()
+              }
+            }
+
+            Text {
+              visible: root.setupMessage !== ""
+              text: root.setupMessage
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: 11
+              wrapMode: Text.Wrap
+              width: parent.width
+            }
           }
         }
 
-        Text {
-          visible: root.setupMessage !== ""
-          text: root.setupMessage
-          color: root.urgent
-          font.family: root.fontFamily
-          font.pixelSize: 11
-          wrapMode: Text.Wrap
-          width: parent.width
+        // Sits above the sliders, which would otherwise take the wheel.
+        MouseArea {
+          width: bodyFlick.width
+          height: Math.max(bodyCol.implicitHeight, bodyFlick.height)
+          z: 10
+          acceptedButtons: Qt.NoButton
+
+          onWheel: function(wheel) {
+            var maxY = Math.max(0, bodyFlick.contentHeight - bodyFlick.height)
+            if (maxY <= 0) { wheel.accepted = false; return }
+            var step = wheel.pixelDelta.y !== 0 ? wheel.pixelDelta.y : (wheel.angleDelta.y / 120) * 48
+            bodyFlick.contentY = Math.max(0, Math.min(maxY, bodyFlick.contentY - step))
+          }
         }
       }
     }
