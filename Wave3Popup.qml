@@ -97,7 +97,7 @@ PopupWindow {
   readonly property real maxHeight: screenHeight > 0 ? Math.min(560, Math.round(screenHeight * 0.65)) : 560
   readonly property real naturalHeight: headerRow.height + headerSep.height + bodyCol.implicitHeight + mainCol.spacing * 2
     + card.contentTopInset + card.contentBottomInset
-  implicitHeight: Math.min(naturalHeight, maxHeight)
+  implicitHeight: Math.min(Math.ceil(naturalHeight), maxHeight)
 
   visible: open || (card.opacity > 0 && !dismissed)
   color: "transparent"
