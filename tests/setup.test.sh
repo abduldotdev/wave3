@@ -111,11 +111,7 @@ check "status: wireplumber installed only gives setup=partial" 'printf "%s\n" "$
 
 # Also link unit file and enable
 mkdir -p "$(dirname "$SVC_FILE")"
-cat > "$SVC_FILE" <<EOF
-# Managed by abduldotdev.wave3 wave3-setup
-[Unit]
-Description=Test
-EOF
+ln -s "$ROOT/systemd/wave3-watch.service" "$SVC_FILE"
 touch "$SYSTEMCTL_STATE/enabled"
 out="$("$SETUP" status)"
 check "status: wireplumber and enabled service without udev gives setup=partial" 'printf "%s\n" "$out" | grep -qx "service=installed" && printf "%s\n" "$out" | grep -qx "service_enabled=yes" && printf "%s\n" "$out" | grep -qx "udev=missing" && printf "%s\n" "$out" | grep -qx "setup=partial"'
@@ -254,6 +250,50 @@ set -e
 check "different service symlink: uninstall exits 0" '[ "$rc" -eq 0 ]'
 check "different service symlink: uninstall leaves symlink untouched" '[ -L "$SVC_FILE" ] && [ "$(readlink -f "$SVC_FILE")" = "$DIFFERENT_SVC" ]'
 rm -f "$SVC_FILE" "$DIFFERENT_SVC"
+
+# --- 9c. Marker line alone does not make a unit ours ---
+# A unit carrying our marker but a different ExecStart must never be enabled or removed.
+: > "$SYSTEMCTL_LOG"
+mkdir -p "$(dirname "$SVC_FILE")"
+cat > "$SVC_FILE" <<EOF
+# Managed by abduldotdev.wave3 wave3-setup — removed by \`wave3-setup uninstall\`
+[Unit]
+Description=Impostor
+
+[Service]
+ExecStart=/usr/bin/touch $TMP/impostor-ran
+EOF
+cp "$SVC_FILE" "$TMP/impostor.expected"
+out="$("$SETUP" status)"
+check "marker impostor: recognized as foreign" 'printf "%s\n" "$out" | grep -qx "service=foreign"'
+set +e
+out="$("$SETUP" install 2>"$TMP/impostor_install.err")"
+rc=$?
+set -e
+check "marker impostor: install exits non-zero and skips" '[ "$rc" -ne 0 ] && grep -q "skip (not ours): $SVC_FILE" "$TMP/impostor_install.err"'
+check "marker impostor: install never enables or reloads" '! grep -q "enable --now" "$SYSTEMCTL_LOG" && ! grep -q "daemon-reload" "$SYSTEMCTL_LOG"'
+"$SETUP" uninstall >/dev/null 2>&1
+check "marker impostor: uninstall leaves it and never disables" 'cmp -s "$SVC_FILE" "$TMP/impostor.expected" && ! grep -q "disable --now" "$SYSTEMCTL_LOG"'
+rm -f "$SVC_FILE"
+
+# Our generated unit with only ExecStart edited is foreign too
+"$SETUP" install >/dev/null 2>&1 || true
+sed -i "s|^ExecStart=.*|ExecStart=/usr/bin/true|" "$SVC_FILE"
+: > "$SYSTEMCTL_LOG"
+out="$("$SETUP" status)"
+check "edited generated unit: recognized as foreign" 'printf "%s\n" "$out" | grep -qx "service=foreign"'
+"$SETUP" install >/dev/null 2>&1 || true
+check "edited generated unit: install never enables" '! grep -q "enable --now" "$SYSTEMCTL_LOG"'
+rm -f "$SVC_FILE" "$WP_CONF"
+
+# A symlink to some other file inside the plugin is not ours
+ln -s "$ROOT/README.md" "$SVC_FILE"
+out="$("$SETUP" status)"
+check "symlink to other plugin file: recognized as foreign" 'printf "%s\n" "$out" | grep -qx "service=foreign"'
+rm -f "$SVC_FILE"
+
+# Shipped unit runs the plugin's own watcher, not a path outside it
+check "shipped unit: ExecStart is the plugin watcher" 'grep -qx "ExecStart=%h/.config/omarchy/plugins/abduldotdev.wave3/bin/wave3-watch" "$ROOT/systemd/wave3-watch.service"'
 
 # --- 10. Foreign files are never touched ---
 mkdir -p "$(dirname "$WP_CONF")" "$(dirname "$SVC_FILE")"

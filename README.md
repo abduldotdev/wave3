@@ -132,7 +132,7 @@ Open the popup and use **SETUP**, or run the same steps from a terminal. The scr
 
 It does not write the keep-default config, does not install the udev rule, and does not link anything into `~/.local/bin`.
 
-If either path already belongs to this plugin, it is left as it is (`ok: … already installed`). That includes a symlink whose target is byte-identical to the plugin's WirePlumber file, and a symlink that resolves into this plugin's `systemd/wave3-watch.service`. A regular file (or a symlink somewhere else) is foreign: install prints `wave3-setup: skip (not ours): <path>` on stderr, continues with the other item, and exits 1. It does not overwrite or delete that file.
+If either path already belongs to this plugin, it is left as it is (`ok: … already installed`). That includes a symlink whose target is byte-identical to the plugin's WirePlumber file. The user unit belongs to the plugin only when its whole content (the file itself, or the file a symlink resolves to) is byte-identical to the unit install generates for this plugin directory, or to the shipped `systemd/wave3-watch.service`, which runs `%h/.config/omarchy/plugins/abduldotdev.wave3/bin/wave3-watch`. The managed-by marker line alone does not count, so a unit with an edited or different `ExecStart` is foreign: it is never enabled, disabled or removed. Anything else at either path is foreign: install prints `wave3-setup: skip (not ours): <path>` on stderr, continues with the other item, and exits 1. It does not overwrite or delete that file.
 
 WirePlumber reads a new drop-in the next time it starts. Restart it yourself with `systemctl --user restart wireplumber`, or log in again. Restarting WirePlumber drops open audio streams. The plugin never runs that restart. Until then the priority and suspend rules are not in effect; `wave3-reset` still works.
 
@@ -147,7 +147,7 @@ sudo install -m644 ~/.config/omarchy/plugins/abduldotdev.wave3/udev/70-elgato-wa
 | Key | Values |
 |---|---|
 | `wireplumber` | `installed` if `~/.config/wireplumber/wireplumber.conf.d/51-elgato-wave3.conf` is a symlink to this plugin's file, or a symlink to a byte-identical file. `foreign` if something else is there. `missing` otherwise. |
-| `service` | `installed` if the user unit is the generated file (it contains the managed-by marker) or a symlink into this plugin's `systemd/wave3-watch.service`. `foreign` if something else is there. `missing` otherwise. |
+| `service` | `installed` if the user unit's full content is byte-identical to the generated unit or to this plugin's `systemd/wave3-watch.service` (directly or through a symlink). `foreign` if something else is there, including a unit with the marker line but different content. `missing` otherwise. |
 | `service_enabled` | `yes` or `no`, from `systemctl --user is-enabled wave3-watch.service`. Any failure is `no`. |
 | `service_active` | `yes` or `no`, from `systemctl --user is-active wave3-watch.service`. Any failure is `no`. |
 | `udev` | `installed` if `70-elgato-wave3.rules` exists under `/etc/udev/rules.d`, `/run/udev/rules.d`, or `/usr/lib/udev/rules.d`. Otherwise `missing`. |
@@ -198,7 +198,7 @@ Nothing in this table is created by `omarchy plugin add` except the plugin direc
 |---|---|---|
 | `~/.config/omarchy/plugins/abduldotdev.wave3/` | `omarchy plugin add` (a git clone). Plugin code does not write here. | omarchy-shell loads `Widget.qml`. One leader bar polls `bin/wave3-reset` and `bin/wave3-hw`. An open popup adds a PipeWire peak-monitor source-output until it closes. |
 | `~/.config/wireplumber/wireplumber.conf.d/51-elgato-wave3.conf` | `wave3-setup install` (symlink). Removed by `wave3-setup uninstall` only if it points at this plugin. | None. WirePlumber applies it on its next start, which you run. |
-| `~/.config/systemd/user/wave3-watch.service` | `wave3-setup install` (generated unit, then `enable --now`). Removed by uninstall when it is that generated file or a symlink into this plugin. | `wave3-watch` (systemd user service): `pactl subscribe`, `wave3-reset --ensure-default` unless `keep_default=no`, and `wave3-hw apply`. |
+| `~/.config/systemd/user/wave3-watch.service` | `wave3-setup install` (generated unit, then `enable --now`). Removed by uninstall only when its full content is that generated unit or the shipped unit (see [Installation](#installation)). | `wave3-watch` (systemd user service): `pactl subscribe`, `wave3-reset --ensure-default` unless `keep_default=no`, and `wave3-hw apply`. |
 | `/etc/udev/rules.d/70-elgato-wave3.rules` | You, with the sudo command from `udev_command`. The plugin never writes it. | None from this plugin. |
 | `~/.config/abduldotdev.wave3/config` | The keep-default toggle, or `wave3-setup keep-default`. Not written by install or uninstall. | `wave3-watch` reads `keep_default` on each trigger. |
 | `~/.local/state/abduldotdev.wave3/hw.json` | `wave3-hw set` and `wave3-hw save` (popup hardware changes). Mode `0600`. | `wave3-watch` runs `wave3-hw apply` to restore it. Uninstall does not delete it. |

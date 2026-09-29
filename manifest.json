@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "abduldotdev.wave3",
   "name": "Wave:3",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "author": "abduldotdev",
   "license": "MIT",
   "description": "Keeps an Elgato Wave:3 USB microphone as the default input and adds a bar widget with a controls popup: hardware gain, mute, headphone volume, monitor blend, Clipguard, low cut, gain lock, LEDs, and a live level meter. One-click Set up in the popup links a WirePlumber rule and starts a watcher. Those setup files are written only after you click Set up.",

@@ -38,25 +38,41 @@ get_wireplumber_status() {
   return 0
 }
 
+# The exact unit install writes for this plugin directory.
+render_unit() {
+  local exec_start="$PLUGIN_DIR/bin/wave3-watch"
+  if [[ "$exec_start" == *" "* ]]; then
+    exec_start="\"$exec_start\""
+  fi
+  cat <<EOF
+$SVC_MARKER — removed by \`wave3-setup uninstall\`
+[Unit]
+Description=Keep the Elgato Wave:3 as the default microphone and restore its settings
+After=pipewire-pulse.service wireplumber.service
+ConditionPathExists=$PLUGIN_DIR/bin/wave3-watch
+
+[Service]
+ExecStart=$exec_start
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+# Ours only when the whole unit (a regular file, or the file a symlink resolves to)
+# is byte-identical to the generated unit or to the plugin's shipped unit. A marker
+# line alone proves nothing: any other content could carry a foreign ExecStart.
 get_service_status() {
   if [[ ! -e "$SVC_FILE" && ! -L "$SVC_FILE" ]]; then
     echo "missing"
     return 0
   fi
-  if [[ -L "$SVC_FILE" ]]; then
-    local resolved
-    resolved="$(readlink -f "$SVC_FILE" 2>/dev/null || true)"
-    if [[ -n "$resolved" && ( "$resolved" == "$SVC_PLUGIN_FILE" || "$resolved" == "$PLUGIN_DIR"/* ) ]]; then
-      echo "installed"
-      return 0
-    fi
-    if [[ -n "$resolved" && -f "$resolved" ]] && cmp -s "$resolved" "$SVC_PLUGIN_FILE"; then
-      echo "installed"
-      return 0
-    fi
-  fi
-  if [[ -f "$SVC_FILE" && ! -L "$SVC_FILE" ]]; then
-    if grep -qF "$SVC_MARKER" "$SVC_FILE" 2>/dev/null; then
+  local resolved
+  resolved="$(readlink -f "$SVC_FILE" 2>/dev/null || true)"
+  if [[ -n "$resolved" && -f "$resolved" ]]; then
+    if cmp -s "$resolved" <(render_unit) || cmp -s "$resolved" "$SVC_PLUGIN_FILE"; then
       echo "installed"
       return 0
     fi
@@ -170,25 +186,7 @@ cmd_install() {
     has_error=1
   else
     mkdir -p "$(dirname "$SVC_FILE")"
-    local exec_start="$PLUGIN_DIR/bin/wave3-watch"
-    if [[ "$exec_start" == *" "* ]]; then
-      exec_start="\"$exec_start\""
-    fi
-    cat > "$SVC_FILE" <<EOF
-# Managed by abduldotdev.wave3 wave3-setup — removed by \`wave3-setup uninstall\`
-[Unit]
-Description=Keep the Elgato Wave:3 as the default microphone and restore its settings
-After=pipewire-pulse.service wireplumber.service
-ConditionPathExists=$PLUGIN_DIR/bin/wave3-watch
-
-[Service]
-ExecStart=$exec_start
-Restart=on-failure
-RestartSec=2
-
-[Install]
-WantedBy=default.target
-EOF
+    render_unit > "$SVC_FILE"
     printf 'wrote: %s\n' "$SVC_FILE"
   fi
 

@@ -1,9 +1,10 @@
 [Unit]
 Description=Keep the Elgato Wave:3 as the default microphone and restore its settings
 After=pipewire-pulse.service wireplumber.service
+ConditionPathExists=%h/.config/omarchy/plugins/abduldotdev.wave3/bin/wave3-watch
 
 [Service]
-ExecStart=%h/.local/bin/wave3-watch
+ExecStart=%h/.config/omarchy/plugins/abduldotdev.wave3/bin/wave3-watch
 Restart=on-failure
 RestartSec=2
 
