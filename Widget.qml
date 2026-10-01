@@ -27,6 +27,9 @@ BarWidget {
   property int barId: 0
   property bool amLeader: false
   property bool anyPopupOpen: false
+  // The shell reads this to route `omarchy-shell shell toggle` to the bar on
+  // the focused monitor.
+  readonly property bool opened: popup.open
   property int fastPollerId: 0
   property bool anyHwBusy: false
   // Set while this instance is the publisher, so its own callback does not
